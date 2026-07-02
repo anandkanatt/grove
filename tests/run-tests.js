@@ -19,6 +19,7 @@ function assertThrows(fn, msg) {
 }
 
 const L = require('../js/logic.js');
+const S = require('../js/state.js');
 
 // ---------- levels ----------
 test('xp 0 is level 1 Seedling', () => {
@@ -235,6 +236,58 @@ test('challenge and variety badges', () => {
   assert(earned.includes('challenge-1'), 'challenge-1');
   assert(earned.includes('variety-bloom'), 'variety-bloom (3 domains)');
   assert(earned.includes('three-blooms'), 'three-blooms');
+});
+
+// ---------- state persistence ----------
+function fakeStorage() {
+  const store = {};
+  return {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+    removeItem: (k) => { delete store[k]; },
+    _dump: () => store,
+  };
+}
+
+test('defaultState has the full schema', () => {
+  const st = S.defaultState(T('2026-07-02'));
+  assertEq(st.version, 1);
+  for (const key of ['player', 'xp', 'petals', 'streak', 'goals', 'journal', 'badges',
+    'decor', 'shopOwned', 'sunshineSent', 'challengesWon', 'circle', 'lastVisit', 'onboarded']) {
+    assert(key in st, `missing key ${key}`);
+  }
+  assertEq(st.streak.shields, 1, 'starts with one gift shield');
+  assert(Array.isArray(st.circle.feed), 'feed array');
+  assert('challenge' in st.circle, 'challenge present');
+});
+test('save/load round-trip preserves state', () => {
+  const storage = fakeStorage();
+  S._setStorage(storage);
+  const st = S.defaultState(T('2026-07-02'));
+  st.player.name = 'Ana';
+  st.xp = 123;
+  S.save(st);
+  const back = S.load();
+  assertEq(back.player.name, 'Ana');
+  assertEq(back.xp, 123);
+});
+test('corrupt storage loads as null, never throws', () => {
+  const storage = fakeStorage();
+  storage.setItem('grove-save-v1', '{nope');
+  S._setStorage(storage);
+  assertEq(S.load(), null);
+  storage.setItem('grove-save-v1', '{"version":99}');
+  assertEq(S.load(), null, 'unknown version rejected');
+});
+test('export/import round-trips; garbage import throws', () => {
+  S._setStorage(fakeStorage());
+  const st = S.defaultState(T('2026-07-02'));
+  st.player.name = 'Priya';
+  const json = S.exportJson(st);
+  const back = S.importJson(json);
+  assertEq(back.player.name, 'Priya');
+  assertThrows(() => S.importJson('{}'), 'empty object rejected');
+  assertThrows(() => S.importJson('not json'), 'non-json rejected');
 });
 
 // ---------- summary ----------
