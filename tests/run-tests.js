@@ -1,0 +1,441 @@
+'use strict';
+// Grove test suite — zero dependencies. Run: node tests/run-tests.js
+let passed = 0, failed = 0;
+const failures = [];
+
+function test(name, fn) {
+  try { fn(); passed++; }
+  catch (e) { failed++; failures.push({ name, message: e.message }); }
+}
+function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+function assertEq(actual, expected, msg) {
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if (a !== b) throw new Error(`${msg || 'assertEq'} — expected ${b}, got ${a}`);
+}
+function assertThrows(fn, msg) {
+  let threw = false;
+  try { fn(); } catch (e) { threw = true; }
+  if (!threw) throw new Error(`${msg || 'assertThrows'} — did not throw`);
+}
+
+const L = require('../js/logic.js');
+const S = require('../js/state.js');
+const D = require('../js/data.js');
+const Sim = require('../js/sim.js');
+
+// ---------- levels ----------
+test('xp 0 is level 1 Seedling', () => {
+  const r = L.levelForXp(0);
+  assertEq(r.level, 1); assertEq(r.title, 'Seedling'); assertEq(r.nextAt, 60); assertEq(r.progress, 0);
+});
+test('xp 59 still level 1', () => {
+  const r = L.levelForXp(59);
+  assertEq(r.level, 1); assert(r.progress > 0.9 && r.progress < 1, 'progress near 1');
+});
+test('xp 60 is level 2 Sprout', () => {
+  const r = L.levelForXp(60);
+  assertEq(r.level, 2); assertEq(r.title, 'Sprout');
+});
+test('xp 200 is level 3 Gardener with mid progress', () => {
+  const r = L.levelForXp(200);
+  assertEq(r.level, 3); assertEq(r.title, 'Gardener');
+  assert(Math.abs(r.progress - (200 - 150) / 150) < 1e-9, 'progress fraction');
+});
+test('xp 1800 is max level Forest Heart, no next', () => {
+  const r = L.levelForXp(1800);
+  assertEq(r.level, 8); assertEq(r.title, 'Forest Heart'); assertEq(r.nextAt, null); assertEq(r.progress, 1);
+});
+
+// ---------- day math & streaks ----------
+const T = (s) => new Date(s + 'T12:00:00').getTime(); // local noon of a date
+
+test('dayKey formats local YYYY-MM-DD', () => {
+  assertEq(L.dayKey(T('2026-07-02')), '2026-07-02');
+});
+test('daysBetween counts calendar days', () => {
+  assertEq(L.daysBetween('2026-07-01', '2026-07-02'), 1);
+  assertEq(L.daysBetween('2026-06-28', '2026-07-02'), 4);
+  assertEq(L.daysBetween('2026-07-02', '2026-07-02'), 0);
+});
+test('first ever activity starts streak at 1', () => {
+  const r = L.applyActivity({ count: 0, lastActiveDay: null, shields: 0 }, T('2026-07-02'));
+  assertEq(r.streak.count, 1); assertEq(r.reset, false); assertEq(r.usedShield, false);
+});
+test('same-day activity is a no-op', () => {
+  const r = L.applyActivity({ count: 3, lastActiveDay: '2026-07-02', shields: 1 }, T('2026-07-02'));
+  assertEq(r.streak.count, 3); assertEq(r.streak.shields, 1);
+});
+test('next-day activity increments', () => {
+  const r = L.applyActivity({ count: 3, lastActiveDay: '2026-07-01', shields: 0 }, T('2026-07-02'));
+  assertEq(r.streak.count, 4); assertEq(r.streak.lastActiveDay, '2026-07-02');
+});
+test('7th consecutive day earns a dew shield, capped at 3', () => {
+  const r = L.applyActivity({ count: 6, lastActiveDay: '2026-07-01', shields: 0 }, T('2026-07-02'));
+  assertEq(r.streak.count, 7); assertEq(r.streak.shields, 1); assertEq(r.earnedShield, true);
+  const r2 = L.applyActivity({ count: 13, lastActiveDay: '2026-07-01', shields: 3 }, T('2026-07-02'));
+  assertEq(r2.streak.shields, 3, 'cap at 3');
+});
+test('1 missed day with a shield: shield consumed, streak continues', () => {
+  const r = L.applyActivity({ count: 5, lastActiveDay: '2026-06-30', shields: 1 }, T('2026-07-02'));
+  assertEq(r.streak.count, 6); assertEq(r.streak.shields, 0); assertEq(r.usedShield, true); assertEq(r.reset, false);
+});
+test('1 missed day without shield: quiet reset to 1', () => {
+  const r = L.applyActivity({ count: 5, lastActiveDay: '2026-06-30', shields: 0 }, T('2026-07-02'));
+  assertEq(r.streak.count, 1); assertEq(r.reset, true);
+});
+test('2 missed days with 2 shields: both consumed, streak continues', () => {
+  const r = L.applyActivity({ count: 9, lastActiveDay: '2026-06-29', shields: 2 }, T('2026-07-02'));
+  assertEq(r.streak.count, 10); assertEq(r.streak.shields, 0); assertEq(r.usedShield, true);
+});
+test('3 missed days with 1 shield: reset, shield kept', () => {
+  const r = L.applyActivity({ count: 9, lastActiveDay: '2026-06-28', shields: 1 }, T('2026-07-02'));
+  assertEq(r.streak.count, 1); assertEq(r.reset, true); assertEq(r.streak.shields, 1);
+  assertEq(r.missedDays, 3);
+});
+
+// ---------- goal stages & step completion ----------
+function makeGoal(total, done) {
+  const steps = [];
+  for (let i = 0; i < total; i++) steps.push({ id: 's' + i, text: 'step ' + i, done: i < done, doneAt: null });
+  return { id: 'g1', name: 'Run a 5K', domain: 'fitness', emoji: '🏃‍♀️', steps, createdAt: 0, bloomedAt: null, reflection: null };
+}
+function makeState(goal) {
+  return {
+    xp: 0, petals: 0, sunshineSent: 0, challengesWon: 0,
+    streak: { count: 0, lastActiveDay: null, shields: 0 },
+    goals: goal ? [goal] : [], badges: {}, journal: [],
+    circle: { members: [], feed: [], activeStruggle: null,
+      challenge: { weekKey: L.weekKey(T('2026-07-02')), target: 55, progress: 0, playerSteps: 0, rewarded: false } },
+  };
+}
+
+test('goal stages follow completion fractions', () => {
+  assertEq(L.goalStage(makeGoal(10, 0)), 0, 'seed');
+  assertEq(L.goalStage(makeGoal(10, 2)), 1, 'sprout');
+  assertEq(L.goalStage(makeGoal(10, 4)), 2, 'bud');
+  assertEq(L.goalStage(makeGoal(10, 8)), 3, 'bloom');
+  assertEq(L.goalStage(makeGoal(10, 10)), 4, 'radiant');
+});
+test('completeStep marks done, awards xp and petals, advances streak', () => {
+  const st = makeState(makeGoal(10, 0));
+  const events = L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  assert(st.goals[0].steps[0].done, 'step done');
+  assert(st.goals[0].steps[0].doneAt !== null, 'doneAt set');
+  assertEq(st.xp, L.XP.STEP); assertEq(st.petals, L.PETALS.STEP);
+  assertEq(st.streak.count, 1);
+  assert(events.some(e => e.type === 'step'), 'step event');
+});
+test('completeStep emits stage-up when a stage boundary is crossed', () => {
+  const st = makeState(makeGoal(10, 1)); // 1/10 sprout; completing 4th of 10 → next completion is 2/10 stays sprout
+  const st2 = makeState(makeGoal(10, 3)); // 3/10 sprout → 4/10 bud
+  const ev = L.completeStep(st2, 'g1', 's3', T('2026-07-02'));
+  assert(ev.some(e => e.type === 'stage-up' && e.stage === 2), 'stage-up to bud');
+  const ev2 = L.completeStep(st, 'g1', 's1', T('2026-07-02'));
+  assert(!ev2.some(e => e.type === 'stage-up'), 'no stage-up inside same stage');
+});
+test('completing the last step blooms the goal with bonus rewards', () => {
+  const st = makeState(makeGoal(3, 2));
+  const ev = L.completeStep(st, 'g1', 's2', T('2026-07-02'));
+  assert(st.goals[0].bloomedAt !== null, 'bloomedAt set');
+  assert(ev.some(e => e.type === 'bloom' && e.goalId === 'g1'), 'bloom event');
+  assertEq(st.xp, L.XP.STEP + L.XP.BLOOM);
+  assertEq(st.petals, L.PETALS.STEP + L.PETALS.BLOOM);
+});
+test('completing an already-done step awards nothing', () => {
+  const st = makeState(makeGoal(10, 1));
+  const ev = L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  assertEq(ev.length, 0); assertEq(st.xp, 0);
+});
+test('completeStep feeds the weekly challenge', () => {
+  const st = makeState(makeGoal(10, 0));
+  L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  assertEq(st.circle.challenge.progress, 1);
+  assertEq(st.circle.challenge.playerSteps, 1);
+});
+test('cheer awards xp/petals and counts sunshine', () => {
+  const st = makeState(null);
+  const ev = L.cheer(st, T('2026-07-02'));
+  assertEq(st.xp, L.XP.CHEER); assertEq(st.petals, L.PETALS.CHEER); assertEq(st.sunshineSent, 1);
+  assert(ev.some(e => e.type === 'cheer'), 'cheer event');
+});
+
+// ---------- weekly challenge ----------
+test('weekKey returns the Monday of the week', () => {
+  assertEq(L.weekKey(T('2026-07-02')), '2026-06-29'); // Thu → Mon
+  assertEq(L.weekKey(T('2026-06-29')), '2026-06-29'); // Mon → itself
+  assertEq(L.weekKey(T('2026-07-05')), '2026-06-29'); // Sun → prior Mon
+});
+test('challengeTarget scales with active goals, capped', () => {
+  const one = makeState(makeGoal(5, 0));
+  assertEq(L.challengeTarget(one), 55);
+  const many = makeState(null);
+  for (let i = 0; i < 6; i++) many.goals.push(makeGoal(5, 0));
+  assertEq(L.challengeTarget(many), 70);
+  const bloomed = makeState(makeGoal(3, 3)); bloomed.goals[0].bloomedAt = 1;
+  assertEq(L.challengeTarget(bloomed), 50, 'bloomed goals are not active');
+});
+test('rollover resets challenge on a new week only', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.circle.challenge.progress = 12; st.circle.challenge.rewarded = true;
+  assertEq(L.rolloverChallengeIfNeeded(st, T('2026-07-03')), false, 'same week: no reset');
+  assertEq(st.circle.challenge.progress, 12);
+  assertEq(L.rolloverChallengeIfNeeded(st, T('2026-07-06')), true, 'next Monday: reset');
+  assertEq(st.circle.challenge.progress, 0);
+  assertEq(st.circle.challenge.rewarded, false);
+  assertEq(st.circle.challenge.weekKey, '2026-07-06');
+  assertEq(st.circle.challenge.playerSteps, 0);
+});
+test('reaching the target rewards exactly once', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.circle.challenge.target = 3;
+  L.addChallengeProgress(st, 2, T('2026-07-02'), false);
+  assertEq(st.challengesWon, 0);
+  const ev = L.addChallengeProgress(st, 1, T('2026-07-02'), false);
+  assert(ev.some(e => e.type === 'challenge-complete'), 'completion event');
+  assertEq(st.challengesWon, 1);
+  const xpAfter = st.xp;
+  L.addChallengeProgress(st, 5, T('2026-07-02'), false);
+  assertEq(st.xp, xpAfter, 'no double reward');
+  assertEq(st.challengesWon, 1);
+});
+
+test('an uninitialized challenge (target 0) never rewards', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.circle.challenge.target = 0; // pre-rollover state, e.g. right after onboarding
+  const ev = L.addChallengeProgress(st, 1, T('2026-07-02'), true);
+  assertEq(ev.length, 0, 'no completion event');
+  assertEq(st.challengesWon, 0);
+  assertEq(st.xp, 0);
+});
+
+// ---------- badges ----------
+test('first-step and first-bloom badges trigger once', () => {
+  const st = makeState(makeGoal(3, 0));
+  L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  let earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('first-step'), 'first-step earned');
+  earned = L.evaluateBadges(st, T('2026-07-02'));
+  assertEq(earned.length, 0, 'no re-trigger');
+  L.completeStep(st, 'g1', 's1', T('2026-07-02'));
+  L.completeStep(st, 'g1', 's2', T('2026-07-02'));
+  earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('first-bloom'), 'first-bloom earned');
+});
+test('streak-7 and sunshine-10 badges', () => {
+  const st = makeState(null);
+  st.streak.count = 7;
+  st.sunshineSent = 10;
+  const earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('streak-7'), 'streak-7');
+  assert(earned.includes('sunshine-10'), 'sunshine-10');
+});
+test('comeback badge fires after a 3+ day gap reset', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.streak = { count: 9, lastActiveDay: '2026-06-28', shields: 0 };
+  L.completeStep(st, 'g1', 's0', T('2026-07-02')); // 3 missed days → reset
+  const earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('comeback'), 'comeback earned');
+});
+test('challenge and variety badges', () => {
+  const st = makeState(null);
+  st.challengesWon = 1;
+  const g1 = makeGoal(2, 2); g1.id = 'a'; g1.domain = 'fitness'; g1.bloomedAt = 1;
+  const g2 = makeGoal(2, 2); g2.id = 'b'; g2.domain = 'career'; g2.bloomedAt = 1;
+  const g3 = makeGoal(2, 2); g3.id = 'c'; g3.domain = 'creative'; g3.bloomedAt = 1;
+  st.goals.push(g1, g2, g3);
+  const earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('challenge-1'), 'challenge-1');
+  assert(earned.includes('variety-bloom'), 'variety-bloom (3 domains)');
+  assert(earned.includes('three-blooms'), 'three-blooms');
+});
+
+// ---------- state persistence ----------
+function fakeStorage() {
+  const store = {};
+  return {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v); },
+    removeItem: (k) => { delete store[k]; },
+    _dump: () => store,
+  };
+}
+
+test('defaultState has the full schema', () => {
+  const st = S.defaultState(T('2026-07-02'));
+  assertEq(st.version, 1);
+  for (const key of ['player', 'xp', 'petals', 'streak', 'goals', 'journal', 'badges',
+    'decor', 'shopOwned', 'sunshineSent', 'challengesWon', 'circle', 'lastVisit', 'onboarded']) {
+    assert(key in st, `missing key ${key}`);
+  }
+  assertEq(st.streak.shields, 1, 'starts with one gift shield');
+  assert(Array.isArray(st.circle.feed), 'feed array');
+  assert('challenge' in st.circle, 'challenge present');
+});
+test('save/load round-trip preserves state', () => {
+  const storage = fakeStorage();
+  S._setStorage(storage);
+  const st = S.defaultState(T('2026-07-02'));
+  st.player.name = 'Ana';
+  st.xp = 123;
+  S.save(st);
+  const back = S.load();
+  assertEq(back.player.name, 'Ana');
+  assertEq(back.xp, 123);
+});
+test('corrupt storage loads as null, never throws', () => {
+  const storage = fakeStorage();
+  storage.setItem('grove-save-v1', '{nope');
+  S._setStorage(storage);
+  assertEq(S.load(), null);
+  storage.setItem('grove-save-v1', '{"version":99}');
+  assertEq(S.load(), null, 'unknown version rejected');
+});
+test('export/import round-trips; garbage import throws', () => {
+  S._setStorage(fakeStorage());
+  const st = S.defaultState(T('2026-07-02'));
+  st.player.name = 'Priya';
+  const json = S.exportJson(st);
+  const back = S.importJson(json);
+  assertEq(back.player.name, 'Priya');
+  assertThrows(() => S.importJson('{}'), 'empty object rejected');
+  assertThrows(() => S.importJson('not json'), 'non-json rejected');
+});
+
+// ---------- content shape ----------
+test('six domains, each with template coverage', () => {
+  assertEq(D.DOMAINS.length, 6);
+  for (const dom of D.DOMAINS) {
+    assert(dom.id && dom.name && dom.emoji && dom.color, 'domain fields');
+    const templates = D.GOAL_TEMPLATES.filter(t => t.domain === dom.id);
+    assert(templates.length >= 3, `domain ${dom.id} needs >=3 templates, has ${templates.length}`);
+  }
+});
+test('every template has 6-10 concrete tiny steps', () => {
+  for (const t of D.GOAL_TEMPLATES) {
+    assert(t.name && t.emoji && t.domain, 'template fields');
+    assert(t.steps.length >= 6 && t.steps.length <= 10, `${t.name}: ${t.steps.length} steps`);
+    for (const s of t.steps) assert(typeof s === 'string' && s.length > 8, 'step is a real sentence');
+  }
+});
+test('five circle members with full voices', () => {
+  assertEq(D.MEMBERS.length, 5);
+  const ids = new Set();
+  for (const m of D.MEMBERS) {
+    ids.add(m.id);
+    assert(m.name && m.bio && m.palette && m.palette.petal && m.palette.center, `${m.id} identity`);
+    assert(m.pace > 0 && m.pace <= 1, 'pace in (0,1]');
+    assert(m.struggleProne >= 0 && m.struggleProne <= 1, 'struggleProne in [0,1]');
+    assertEq(m.goals.length, 2, `${m.id} has two goals`);
+    for (const g of m.goals) assert(g.name && g.domain, 'member goal fields');
+    assert(m.cheers.length >= 6, `${m.id} needs >=6 cheers`);
+    assert(m.struggles.length >= 3, `${m.id} needs >=3 struggles`);
+    assert(m.recoveries.length >= 3, `${m.id} needs >=3 recoveries`);
+    assert(m.feedVerbs.length >= 4, `${m.id} needs >=4 feed verbs`);
+    for (const r of m.recoveries) assert(r.includes('{name}'), `${m.id} recovery credits the player`);
+  }
+  assertEq(ids.size, 5, 'unique ids');
+});
+test('affirmations, comeback lines, badges, shop, avatars', () => {
+  assert(D.AFFIRMATIONS.length >= 15, 'affirmations >=15');
+  assert(D.COMEBACK_LINES.length >= 4, 'comeback lines >=4');
+  for (const id of Object.keys(L.BADGE_CHECKS)) {
+    assert(D.BADGES[id] && D.BADGES[id].name && D.BADGES[id].icon && D.BADGES[id].desc,
+      `badge display missing for ${id}`);
+  }
+  assert(D.SHOP_ITEMS.length >= 8, 'shop >=8');
+  const kinds = new Set();
+  for (const it of D.SHOP_ITEMS) {
+    assert(it.id && it.name && it.price > 0 && it.kind, 'shop item fields');
+    kinds.add(it.kind);
+  }
+  assertEq(kinds.size, D.SHOP_ITEMS.length, 'unique decor kinds');
+  assert(D.PLAYER_AVATARS.length >= 6, 'avatars >=6');
+  assert(D.ACCENTS.length >= 4, 'accents >=4');
+});
+
+// ---------- circle simulation ----------
+function simState(lastVisitTs) {
+  const st = S.defaultState(lastVisitTs);
+  st.player.name = 'Ana';
+  Sim.initMembers(st);
+  st.lastVisit = lastVisitTs;
+  return st;
+}
+const memberIds = new Set(D.MEMBERS.map(m => m.id));
+
+test('initMembers seeds five lean members', () => {
+  const st = simState(T('2026-07-01'));
+  assertEq(st.circle.members.length, 5);
+  for (const m of st.circle.members) assert(memberIds.has(m.id), 'known id');
+});
+test('catchUp generates bounded, in-window, believable activity', () => {
+  const st = simState(T('2026-06-29'));
+  const now = T('2026-07-02');
+  const ev = Sim.catchUp(st, now, Sim.makeRng(42));
+  assert(ev.length > 0, 'some activity over 3 days');
+  assert(ev.length <= 30, 'capped at 30');
+  for (const e of ev) {
+    assert(e.ts >= st.lastVisit && e.ts <= now, 'timestamp in window');
+    assert(memberIds.has(e.memberId), 'valid member');
+    assert(typeof e.text === 'string' && e.text.length > 0, 'has text');
+  }
+  assertEq(st.circle.feed.length, ev.length, 'events landed in feed');
+});
+test('catchUp is deterministic for the same seed', () => {
+  const a = simState(T('2026-06-29')), b = simState(T('2026-06-29'));
+  const evA = Sim.catchUp(a, T('2026-07-02'), Sim.makeRng(7));
+  const evB = Sim.catchUp(b, T('2026-07-02'), Sim.makeRng(7));
+  assertEq(evA, evB);
+});
+test('a long absence produces one digest per member, not a flood', () => {
+  const st = simState(T('2026-06-01'));
+  const ev = Sim.catchUp(st, T('2026-07-02'), Sim.makeRng(1));
+  assertEq(ev.length, 5);
+  for (const e of ev) assertEq(e.type, 'digest');
+});
+test('a quick revisit produces nothing', () => {
+  const now = T('2026-07-02');
+  const st = simState(now - 2 * 60 * 1000);
+  assertEq(Sim.catchUp(st, now, Sim.makeRng(1)).length, 0);
+});
+test('reactions bring 1-2 personal cheers from distinct members', () => {
+  const st = simState(T('2026-07-02'));
+  const ev = Sim.reactions(st, Sim.makeRng(5), T('2026-07-02'));
+  assert(ev.length >= 1 && ev.length <= 2, 'one or two cheers');
+  const seen = new Set();
+  for (const e of ev) {
+    assertEq(e.type, 'cheer_player');
+    assert(!seen.has(e.memberId), 'distinct members'); seen.add(e.memberId);
+    assert(e.text.length > 0, 'cheer text');
+  }
+});
+test('only one struggle can be active at a time', () => {
+  const st = simState(T('2026-07-02'));
+  const always = () => 0; // forces the struggle roll
+  const ev1 = Sim.maybeStruggle(st, always, T('2026-07-02'));
+  assertEq(ev1.length, 1);
+  assertEq(ev1[0].type, 'struggle');
+  const ev2 = Sim.maybeStruggle(st, always, T('2026-07-02'));
+  assertEq(ev2.length, 0, 'no second concurrent struggle');
+  const st2 = simState(T('2026-07-02'));
+  const never = () => 0.99;
+  assertEq(Sim.maybeStruggle(st2, never, T('2026-07-02')).length, 0, 'roll can fail');
+});
+test('supporting a struggling member sparks a recovery crediting the player', () => {
+  const st = simState(T('2026-07-02'));
+  Sim.maybeStruggle(st, () => 0, T('2026-07-02'));
+  const strugglerId = st.circle.activeStruggle.memberId;
+  Sim.supportMember(st, strugglerId, T('2026-07-02') + 60000);
+  assertEq(st.sunshineSent, 1, 'sunshine counted');
+  assertEq(st.circle.activeStruggle, null, 'struggle resolved');
+  const recovery = st.circle.feed.find(e => e.type === 'recovery');
+  assert(recovery, 'recovery posted');
+  assert(recovery.text.includes('Ana'), 'player named in recovery');
+  const struggle = st.circle.feed.find(e => e.type === 'struggle');
+  assertEq(struggle.cheered, true, 'struggle event marked cheered');
+});
+
+// ---------- summary ----------
+console.log(`\n${passed} passed, ${failed} failed`);
+for (const f of failures) console.log(`  FAIL ${f.name}: ${f.message}`);
+process.exit(failed ? 1 : 0);
