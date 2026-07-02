@@ -152,13 +152,17 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.
 /* ---------- circle ---------- */
 .member-scroll { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; }
 .member-card {
-  min-width: 148px; background: var(--card); border: 1px solid var(--line);
+  width: 172px; background: var(--card); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 12px; text-align: center; box-shadow: var(--shadow);
   flex-shrink: 0;
 }
 .member-card svg { width: 52px; height: 52px; }
 .member-card .mname { font-weight: 700; font-size: 0.95rem; }
 .member-card .mbio { font-size: 0.75rem; color: var(--muted); min-height: 3.4em; }
+.member-card .goal-tag {
+  display: inline-block; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .feed-item {
   display: flex; gap: 12px; padding: 12px 4px; border-bottom: 1px dashed var(--line);
