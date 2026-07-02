@@ -90,6 +90,72 @@ test('3 missed days with 1 shield: reset, shield kept', () => {
   assertEq(r.missedDays, 3);
 });
 
+// ---------- goal stages & step completion ----------
+function makeGoal(total, done) {
+  const steps = [];
+  for (let i = 0; i < total; i++) steps.push({ id: 's' + i, text: 'step ' + i, done: i < done, doneAt: null });
+  return { id: 'g1', name: 'Run a 5K', domain: 'fitness', emoji: '🏃‍♀️', steps, createdAt: 0, bloomedAt: null, reflection: null };
+}
+function makeState(goal) {
+  return {
+    xp: 0, petals: 0, sunshineSent: 0, challengesWon: 0,
+    streak: { count: 0, lastActiveDay: null, shields: 0 },
+    goals: goal ? [goal] : [], badges: {}, journal: [],
+    circle: { members: [], feed: [], activeStruggle: null,
+      challenge: { weekKey: L.weekKey(T('2026-07-02')), target: 55, progress: 0, playerSteps: 0, rewarded: false } },
+  };
+}
+
+test('goal stages follow completion fractions', () => {
+  assertEq(L.goalStage(makeGoal(10, 0)), 0, 'seed');
+  assertEq(L.goalStage(makeGoal(10, 2)), 1, 'sprout');
+  assertEq(L.goalStage(makeGoal(10, 4)), 2, 'bud');
+  assertEq(L.goalStage(makeGoal(10, 8)), 3, 'bloom');
+  assertEq(L.goalStage(makeGoal(10, 10)), 4, 'radiant');
+});
+test('completeStep marks done, awards xp and petals, advances streak', () => {
+  const st = makeState(makeGoal(10, 0));
+  const events = L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  assert(st.goals[0].steps[0].done, 'step done');
+  assert(st.goals[0].steps[0].doneAt !== null, 'doneAt set');
+  assertEq(st.xp, L.XP.STEP); assertEq(st.petals, L.PETALS.STEP);
+  assertEq(st.streak.count, 1);
+  assert(events.some(e => e.type === 'step'), 'step event');
+});
+test('completeStep emits stage-up when a stage boundary is crossed', () => {
+  const st = makeState(makeGoal(10, 1)); // 1/10 sprout; completing 4th of 10 → next completion is 2/10 stays sprout
+  const st2 = makeState(makeGoal(10, 3)); // 3/10 sprout → 4/10 bud
+  const ev = L.completeStep(st2, 'g1', 's3', T('2026-07-02'));
+  assert(ev.some(e => e.type === 'stage-up' && e.stage === 2), 'stage-up to bud');
+  const ev2 = L.completeStep(st, 'g1', 's1', T('2026-07-02'));
+  assert(!ev2.some(e => e.type === 'stage-up'), 'no stage-up inside same stage');
+});
+test('completing the last step blooms the goal with bonus rewards', () => {
+  const st = makeState(makeGoal(3, 2));
+  const ev = L.completeStep(st, 'g1', 's2', T('2026-07-02'));
+  assert(st.goals[0].bloomedAt !== null, 'bloomedAt set');
+  assert(ev.some(e => e.type === 'bloom' && e.goalId === 'g1'), 'bloom event');
+  assertEq(st.xp, L.XP.STEP + L.XP.BLOOM);
+  assertEq(st.petals, L.PETALS.STEP + L.PETALS.BLOOM);
+});
+test('completing an already-done step awards nothing', () => {
+  const st = makeState(makeGoal(10, 1));
+  const ev = L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  assertEq(ev.length, 0); assertEq(st.xp, 0);
+});
+test('completeStep feeds the weekly challenge', () => {
+  const st = makeState(makeGoal(10, 0));
+  L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  assertEq(st.circle.challenge.progress, 1);
+  assertEq(st.circle.challenge.playerSteps, 1);
+});
+test('cheer awards xp/petals and counts sunshine', () => {
+  const st = makeState(null);
+  const ev = L.cheer(st, T('2026-07-02'));
+  assertEq(st.xp, L.XP.CHEER); assertEq(st.petals, L.PETALS.CHEER); assertEq(st.sunshineSent, 1);
+  assert(ev.some(e => e.type === 'cheer'), 'cheer event');
+});
+
 // ---------- summary ----------
 console.log(`\n${passed} passed, ${failed} failed`);
 for (const f of failures) console.log(`  FAIL ${f.name}: ${f.message}`);

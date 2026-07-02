@@ -75,5 +75,82 @@ GroveLogic.applyActivity = function (streak, ts) {
   return { streak: s, usedShield, reset, earnedShield, missedDays };
 };
 
+// Growth stages: 0 seed, 1 sprout, 2 bud, 3 bloom, 4 radiant bloom.
+GroveLogic.goalStage = function (goal) {
+  const total = goal.steps.length;
+  if (total === 0) return 0;
+  const done = goal.steps.filter(s => s.done).length;
+  const f = done / total;
+  if (f === 0) return 0;
+  if (f < 0.4) return 1;
+  if (f < 0.75) return 2;
+  if (f < 1) return 3;
+  return 4;
+};
+
+GroveLogic.weekKey = function (ts) {
+  const d = new Date(ts);
+  const sinceMonday = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - sinceMonday);
+  return GroveLogic.dayKey(d.getTime());
+};
+
+GroveLogic.cheer = function (state, ts) {
+  state.xp += GroveLogic.XP.CHEER;
+  state.petals += GroveLogic.PETALS.CHEER;
+  state.sunshineSent += 1;
+  return [{ type: 'cheer', xp: GroveLogic.XP.CHEER, petals: GroveLogic.PETALS.CHEER }];
+};
+
+GroveLogic.addChallengeProgress = function (state, n, ts, fromPlayer) {
+  const ch = state.circle.challenge;
+  ch.progress += n;
+  if (fromPlayer) ch.playerSteps += n;
+  const events = [];
+  if (!ch.rewarded && ch.progress >= ch.target) {
+    ch.rewarded = true;
+    state.challengesWon += 1;
+    state.xp += GroveLogic.XP.CHALLENGE;
+    state.petals += GroveLogic.PETALS.CHALLENGE;
+    events.push({ type: 'challenge-complete', xp: GroveLogic.XP.CHALLENGE, petals: GroveLogic.PETALS.CHALLENGE });
+  }
+  return events;
+};
+
+GroveLogic.completeStep = function (state, goalId, stepId, ts) {
+  const goal = state.goals.find(g => g.id === goalId);
+  if (!goal) return [];
+  const step = goal.steps.find(s => s.id === stepId);
+  if (!step || step.done) return [];
+
+  const events = [];
+  const stageBefore = GroveLogic.goalStage(goal);
+  step.done = true;
+  step.doneAt = ts;
+  state.xp += GroveLogic.XP.STEP;
+  state.petals += GroveLogic.PETALS.STEP;
+  events.push({ type: 'step', goalId, stepId, xp: GroveLogic.XP.STEP, petals: GroveLogic.PETALS.STEP });
+
+  const streakRes = GroveLogic.applyActivity(state.streak, ts);
+  state.streak = streakRes.streak;
+  if (streakRes.reset && streakRes.missedDays >= 3) state.comebackPending = true;
+  events.push({ type: 'streak', count: state.streak.count, usedShield: streakRes.usedShield,
+    reset: streakRes.reset, earnedShield: streakRes.earnedShield });
+
+  const stageAfter = GroveLogic.goalStage(goal);
+  if (stageAfter > stageBefore && stageAfter < 4) {
+    events.push({ type: 'stage-up', goalId, stage: stageAfter });
+  }
+  if (stageAfter === 4 && !goal.bloomedAt) {
+    goal.bloomedAt = ts;
+    state.xp += GroveLogic.XP.BLOOM;
+    state.petals += GroveLogic.PETALS.BLOOM;
+    events.push({ type: 'bloom', goalId, xp: GroveLogic.XP.BLOOM, petals: GroveLogic.PETALS.BLOOM });
+  }
+
+  events.push(...GroveLogic.addChallengeProgress(state, 1, ts, true));
+  return events;
+};
+
 if (typeof module !== 'undefined' && module.exports) module.exports = GroveLogic;
 if (typeof window !== 'undefined') window.GroveLogic = GroveLogic;
