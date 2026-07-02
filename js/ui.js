@@ -503,6 +503,7 @@ const GroveUI = {};
       st.player.avatarId = ob.avatarId;
       st.player.accentId = ob.accentId;
       st.onboarded = true;
+      L.rolloverChallengeIfNeeded(st, Date.now()); // arm this week's collective target
       applyAccent();
       const maya = memberDef('maya');
       st.circle.feedSeq = (st.circle.feedSeq || 0) + 1;

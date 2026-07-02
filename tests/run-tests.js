@@ -199,6 +199,15 @@ test('reaching the target rewards exactly once', () => {
   assertEq(st.challengesWon, 1);
 });
 
+test('an uninitialized challenge (target 0) never rewards', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.circle.challenge.target = 0; // pre-rollover state, e.g. right after onboarding
+  const ev = L.addChallengeProgress(st, 1, T('2026-07-02'), true);
+  assertEq(ev.length, 0, 'no completion event');
+  assertEq(st.challengesWon, 0);
+  assertEq(st.xp, 0);
+});
+
 // ---------- badges ----------
 test('first-step and first-bloom badges trigger once', () => {
   const st = makeState(makeGoal(3, 0));
