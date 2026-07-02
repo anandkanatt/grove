@@ -21,6 +21,7 @@ function assertThrows(fn, msg) {
 const L = require('../js/logic.js');
 const S = require('../js/state.js');
 const D = require('../js/data.js');
+const Sim = require('../js/sim.js');
 
 // ---------- levels ----------
 test('xp 0 is level 1 Seedling', () => {
@@ -341,6 +342,88 @@ test('affirmations, comeback lines, badges, shop, avatars', () => {
   assertEq(kinds.size, D.SHOP_ITEMS.length, 'unique decor kinds');
   assert(D.PLAYER_AVATARS.length >= 6, 'avatars >=6');
   assert(D.ACCENTS.length >= 4, 'accents >=4');
+});
+
+// ---------- circle simulation ----------
+function simState(lastVisitTs) {
+  const st = S.defaultState(lastVisitTs);
+  st.player.name = 'Ana';
+  Sim.initMembers(st);
+  st.lastVisit = lastVisitTs;
+  return st;
+}
+const memberIds = new Set(D.MEMBERS.map(m => m.id));
+
+test('initMembers seeds five lean members', () => {
+  const st = simState(T('2026-07-01'));
+  assertEq(st.circle.members.length, 5);
+  for (const m of st.circle.members) assert(memberIds.has(m.id), 'known id');
+});
+test('catchUp generates bounded, in-window, believable activity', () => {
+  const st = simState(T('2026-06-29'));
+  const now = T('2026-07-02');
+  const ev = Sim.catchUp(st, now, Sim.makeRng(42));
+  assert(ev.length > 0, 'some activity over 3 days');
+  assert(ev.length <= 30, 'capped at 30');
+  for (const e of ev) {
+    assert(e.ts >= st.lastVisit && e.ts <= now, 'timestamp in window');
+    assert(memberIds.has(e.memberId), 'valid member');
+    assert(typeof e.text === 'string' && e.text.length > 0, 'has text');
+  }
+  assertEq(st.circle.feed.length, ev.length, 'events landed in feed');
+});
+test('catchUp is deterministic for the same seed', () => {
+  const a = simState(T('2026-06-29')), b = simState(T('2026-06-29'));
+  const evA = Sim.catchUp(a, T('2026-07-02'), Sim.makeRng(7));
+  const evB = Sim.catchUp(b, T('2026-07-02'), Sim.makeRng(7));
+  assertEq(evA, evB);
+});
+test('a long absence produces one digest per member, not a flood', () => {
+  const st = simState(T('2026-06-01'));
+  const ev = Sim.catchUp(st, T('2026-07-02'), Sim.makeRng(1));
+  assertEq(ev.length, 5);
+  for (const e of ev) assertEq(e.type, 'digest');
+});
+test('a quick revisit produces nothing', () => {
+  const now = T('2026-07-02');
+  const st = simState(now - 2 * 60 * 1000);
+  assertEq(Sim.catchUp(st, now, Sim.makeRng(1)).length, 0);
+});
+test('reactions bring 1-2 personal cheers from distinct members', () => {
+  const st = simState(T('2026-07-02'));
+  const ev = Sim.reactions(st, Sim.makeRng(5), T('2026-07-02'));
+  assert(ev.length >= 1 && ev.length <= 2, 'one or two cheers');
+  const seen = new Set();
+  for (const e of ev) {
+    assertEq(e.type, 'cheer_player');
+    assert(!seen.has(e.memberId), 'distinct members'); seen.add(e.memberId);
+    assert(e.text.length > 0, 'cheer text');
+  }
+});
+test('only one struggle can be active at a time', () => {
+  const st = simState(T('2026-07-02'));
+  const always = () => 0; // forces the struggle roll
+  const ev1 = Sim.maybeStruggle(st, always, T('2026-07-02'));
+  assertEq(ev1.length, 1);
+  assertEq(ev1[0].type, 'struggle');
+  const ev2 = Sim.maybeStruggle(st, always, T('2026-07-02'));
+  assertEq(ev2.length, 0, 'no second concurrent struggle');
+  const st2 = simState(T('2026-07-02'));
+  const never = () => 0.99;
+  assertEq(Sim.maybeStruggle(st2, never, T('2026-07-02')).length, 0, 'roll can fail');
+});
+test('supporting a struggling member sparks a recovery crediting the player', () => {
+  const st = simState(T('2026-07-02'));
+  Sim.maybeStruggle(st, () => 0, T('2026-07-02'));
+  const strugglerId = st.circle.activeStruggle.memberId;
+  Sim.supportMember(st, strugglerId, T('2026-07-02') + 60000);
+  assertEq(st.sunshineSent, 1, 'sunshine counted');
+  assertEq(st.circle.activeStruggle, null, 'struggle resolved');
+  const recovery = st.circle.feed.find(e => e.type === 'recovery');
+  assert(recovery, 'recovery posted');
+  assert(recovery.text.includes('Ana'), 'player named in recovery');
+  const struggle = st.circle.feed.find(e => e.type === 'struggle');
+  assertEq(struggle.cheered, true, 'struggle event marked cheered');
 });
 
 // ---------- summary ----------
