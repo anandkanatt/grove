@@ -20,6 +20,7 @@ function assertThrows(fn, msg) {
 
 const L = require('../js/logic.js');
 const S = require('../js/state.js');
+const D = require('../js/data.js');
 
 // ---------- levels ----------
 test('xp 0 is level 1 Seedling', () => {
@@ -288,6 +289,58 @@ test('export/import round-trips; garbage import throws', () => {
   assertEq(back.player.name, 'Priya');
   assertThrows(() => S.importJson('{}'), 'empty object rejected');
   assertThrows(() => S.importJson('not json'), 'non-json rejected');
+});
+
+// ---------- content shape ----------
+test('six domains, each with template coverage', () => {
+  assertEq(D.DOMAINS.length, 6);
+  for (const dom of D.DOMAINS) {
+    assert(dom.id && dom.name && dom.emoji && dom.color, 'domain fields');
+    const templates = D.GOAL_TEMPLATES.filter(t => t.domain === dom.id);
+    assert(templates.length >= 3, `domain ${dom.id} needs >=3 templates, has ${templates.length}`);
+  }
+});
+test('every template has 6-10 concrete tiny steps', () => {
+  for (const t of D.GOAL_TEMPLATES) {
+    assert(t.name && t.emoji && t.domain, 'template fields');
+    assert(t.steps.length >= 6 && t.steps.length <= 10, `${t.name}: ${t.steps.length} steps`);
+    for (const s of t.steps) assert(typeof s === 'string' && s.length > 8, 'step is a real sentence');
+  }
+});
+test('five circle members with full voices', () => {
+  assertEq(D.MEMBERS.length, 5);
+  const ids = new Set();
+  for (const m of D.MEMBERS) {
+    ids.add(m.id);
+    assert(m.name && m.bio && m.palette && m.palette.petal && m.palette.center, `${m.id} identity`);
+    assert(m.pace > 0 && m.pace <= 1, 'pace in (0,1]');
+    assert(m.struggleProne >= 0 && m.struggleProne <= 1, 'struggleProne in [0,1]');
+    assertEq(m.goals.length, 2, `${m.id} has two goals`);
+    for (const g of m.goals) assert(g.name && g.domain, 'member goal fields');
+    assert(m.cheers.length >= 6, `${m.id} needs >=6 cheers`);
+    assert(m.struggles.length >= 3, `${m.id} needs >=3 struggles`);
+    assert(m.recoveries.length >= 3, `${m.id} needs >=3 recoveries`);
+    assert(m.feedVerbs.length >= 4, `${m.id} needs >=4 feed verbs`);
+    for (const r of m.recoveries) assert(r.includes('{name}'), `${m.id} recovery credits the player`);
+  }
+  assertEq(ids.size, 5, 'unique ids');
+});
+test('affirmations, comeback lines, badges, shop, avatars', () => {
+  assert(D.AFFIRMATIONS.length >= 15, 'affirmations >=15');
+  assert(D.COMEBACK_LINES.length >= 4, 'comeback lines >=4');
+  for (const id of Object.keys(L.BADGE_CHECKS)) {
+    assert(D.BADGES[id] && D.BADGES[id].name && D.BADGES[id].icon && D.BADGES[id].desc,
+      `badge display missing for ${id}`);
+  }
+  assert(D.SHOP_ITEMS.length >= 8, 'shop >=8');
+  const kinds = new Set();
+  for (const it of D.SHOP_ITEMS) {
+    assert(it.id && it.name && it.price > 0 && it.kind, 'shop item fields');
+    kinds.add(it.kind);
+  }
+  assertEq(kinds.size, D.SHOP_ITEMS.length, 'unique decor kinds');
+  assert(D.PLAYER_AVATARS.length >= 6, 'avatars >=6');
+  assert(D.ACCENTS.length >= 4, 'accents >=4');
 });
 
 // ---------- summary ----------
