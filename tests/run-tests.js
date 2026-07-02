@@ -156,6 +156,87 @@ test('cheer awards xp/petals and counts sunshine', () => {
   assert(ev.some(e => e.type === 'cheer'), 'cheer event');
 });
 
+// ---------- weekly challenge ----------
+test('weekKey returns the Monday of the week', () => {
+  assertEq(L.weekKey(T('2026-07-02')), '2026-06-29'); // Thu → Mon
+  assertEq(L.weekKey(T('2026-06-29')), '2026-06-29'); // Mon → itself
+  assertEq(L.weekKey(T('2026-07-05')), '2026-06-29'); // Sun → prior Mon
+});
+test('challengeTarget scales with active goals, capped', () => {
+  const one = makeState(makeGoal(5, 0));
+  assertEq(L.challengeTarget(one), 55);
+  const many = makeState(null);
+  for (let i = 0; i < 6; i++) many.goals.push(makeGoal(5, 0));
+  assertEq(L.challengeTarget(many), 70);
+  const bloomed = makeState(makeGoal(3, 3)); bloomed.goals[0].bloomedAt = 1;
+  assertEq(L.challengeTarget(bloomed), 50, 'bloomed goals are not active');
+});
+test('rollover resets challenge on a new week only', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.circle.challenge.progress = 12; st.circle.challenge.rewarded = true;
+  assertEq(L.rolloverChallengeIfNeeded(st, T('2026-07-03')), false, 'same week: no reset');
+  assertEq(st.circle.challenge.progress, 12);
+  assertEq(L.rolloverChallengeIfNeeded(st, T('2026-07-06')), true, 'next Monday: reset');
+  assertEq(st.circle.challenge.progress, 0);
+  assertEq(st.circle.challenge.rewarded, false);
+  assertEq(st.circle.challenge.weekKey, '2026-07-06');
+  assertEq(st.circle.challenge.playerSteps, 0);
+});
+test('reaching the target rewards exactly once', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.circle.challenge.target = 3;
+  L.addChallengeProgress(st, 2, T('2026-07-02'), false);
+  assertEq(st.challengesWon, 0);
+  const ev = L.addChallengeProgress(st, 1, T('2026-07-02'), false);
+  assert(ev.some(e => e.type === 'challenge-complete'), 'completion event');
+  assertEq(st.challengesWon, 1);
+  const xpAfter = st.xp;
+  L.addChallengeProgress(st, 5, T('2026-07-02'), false);
+  assertEq(st.xp, xpAfter, 'no double reward');
+  assertEq(st.challengesWon, 1);
+});
+
+// ---------- badges ----------
+test('first-step and first-bloom badges trigger once', () => {
+  const st = makeState(makeGoal(3, 0));
+  L.completeStep(st, 'g1', 's0', T('2026-07-02'));
+  let earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('first-step'), 'first-step earned');
+  earned = L.evaluateBadges(st, T('2026-07-02'));
+  assertEq(earned.length, 0, 'no re-trigger');
+  L.completeStep(st, 'g1', 's1', T('2026-07-02'));
+  L.completeStep(st, 'g1', 's2', T('2026-07-02'));
+  earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('first-bloom'), 'first-bloom earned');
+});
+test('streak-7 and sunshine-10 badges', () => {
+  const st = makeState(null);
+  st.streak.count = 7;
+  st.sunshineSent = 10;
+  const earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('streak-7'), 'streak-7');
+  assert(earned.includes('sunshine-10'), 'sunshine-10');
+});
+test('comeback badge fires after a 3+ day gap reset', () => {
+  const st = makeState(makeGoal(5, 0));
+  st.streak = { count: 9, lastActiveDay: '2026-06-28', shields: 0 };
+  L.completeStep(st, 'g1', 's0', T('2026-07-02')); // 3 missed days → reset
+  const earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('comeback'), 'comeback earned');
+});
+test('challenge and variety badges', () => {
+  const st = makeState(null);
+  st.challengesWon = 1;
+  const g1 = makeGoal(2, 2); g1.id = 'a'; g1.domain = 'fitness'; g1.bloomedAt = 1;
+  const g2 = makeGoal(2, 2); g2.id = 'b'; g2.domain = 'career'; g2.bloomedAt = 1;
+  const g3 = makeGoal(2, 2); g3.id = 'c'; g3.domain = 'creative'; g3.bloomedAt = 1;
+  st.goals.push(g1, g2, g3);
+  const earned = L.evaluateBadges(st, T('2026-07-02'));
+  assert(earned.includes('challenge-1'), 'challenge-1');
+  assert(earned.includes('variety-bloom'), 'variety-bloom (3 domains)');
+  assert(earned.includes('three-blooms'), 'three-blooms');
+});
+
 // ---------- summary ----------
 console.log(`\n${passed} passed, ${failed} failed`);
 for (const f of failures) console.log(`  FAIL ${f.name}: ${f.message}`);

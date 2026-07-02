@@ -152,5 +152,54 @@ GroveLogic.completeStep = function (state, goalId, stepId, ts) {
   return events;
 };
 
+GroveLogic.activeGoals = function (state) {
+  return state.goals.filter(g => !g.bloomedAt);
+};
+
+GroveLogic.challengeTarget = function (state) {
+  return 50 + 5 * Math.min(GroveLogic.activeGoals(state).length, 4);
+};
+
+GroveLogic.rolloverChallengeIfNeeded = function (state, ts) {
+  const wk = GroveLogic.weekKey(ts);
+  const ch = state.circle.challenge;
+  if (ch.weekKey === wk) return false;
+  state.circle.challenge = {
+    weekKey: wk, target: GroveLogic.challengeTarget(state),
+    progress: 0, playerSteps: 0, rewarded: false,
+  };
+  return true;
+};
+
+// Badge conditions live here; display names/art live in data.js under the same ids.
+const bloomedGoals = (state) => state.goals.filter(g => g.bloomedAt);
+GroveLogic.BADGE_CHECKS = {
+  'first-step': (s) => s.goals.some(g => g.steps.some(st => st.done)),
+  'first-bloom': (s) => bloomedGoals(s).length >= 1,
+  'three-blooms': (s) => bloomedGoals(s).length >= 3,
+  'variety-bloom': (s) => new Set(bloomedGoals(s).map(g => g.domain)).size >= 3,
+  'streak-7': (s) => s.streak.count >= 7,
+  'streak-30': (s) => s.streak.count >= 30,
+  'sunshine-10': (s) => s.sunshineSent >= 10,
+  'sunshine-50': (s) => s.sunshineSent >= 50,
+  'comeback': (s) => s.comebackPending === true,
+  'challenge-1': (s) => s.challengesWon >= 1,
+  'challenge-5': (s) => s.challengesWon >= 5,
+  'five-goals': (s) => s.goals.length >= 5,
+  'level-5': (s) => GroveLogic.levelForXp(s.xp).level >= 5,
+};
+
+GroveLogic.evaluateBadges = function (state, ts) {
+  const earned = [];
+  for (const id of Object.keys(GroveLogic.BADGE_CHECKS)) {
+    if (state.badges[id]) continue;
+    if (GroveLogic.BADGE_CHECKS[id](state)) {
+      state.badges[id] = ts;
+      earned.push(id);
+    }
+  }
+  return earned;
+};
+
 if (typeof module !== 'undefined' && module.exports) module.exports = GroveLogic;
 if (typeof window !== 'undefined') window.GroveLogic = GroveLogic;
