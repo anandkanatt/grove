@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grove — grow your goals, together</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌸</text></svg>">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wordmark">Grove<span class="leaf">🌿</span></div>
+  <div class="hud" id="hud"></div>
+</header>
+
+<nav class="tabs" id="tabs" aria-label="Main">
+  <button class="tab active" data-action="nav" data-view="today">Today</button>
+  <button class="tab" data-action="nav" data-view="garden">Garden</button>
+  <button class="tab" data-action="nav" data-view="circle">Circle</button>
+  <button class="tab" data-action="nav" data-view="challenge">Challenge</button>
+  <button class="tab" data-action="nav" data-view="shop">Shop</button>
+  <button class="tab" data-action="nav" data-view="more">More</button>
+</nav>
+
+<main id="app">
+  <section id="view-today" class="view"></section>
+  <section id="view-garden" class="view hidden"></section>
+  <section id="view-circle" class="view hidden"></section>
+  <section id="view-challenge" class="view hidden"></section>
+  <section id="view-shop" class="view hidden"></section>
+  <section id="view-more" class="view hidden"></section>
+</main>
+
+<div id="toasts" aria-live="polite"></div>
+<div id="modal-root" class="hidden"></div>
+
+<script src="js/data.js"></script>
+<script src="js/logic.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/state.js"></script>
+<script src="js/garden.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
