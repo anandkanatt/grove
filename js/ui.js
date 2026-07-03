@@ -10,6 +10,19 @@ const GroveUI = {};
   let currentView = 'today';
   let ob = null;           // onboarding / new-goal wizard scratch
   let goalSeq = 0;
+  let pendingJoin = null;  // invite code parked until onboarding finishes
+
+  const Social = () => window.GroveSocial;
+  const netConfigured = () => !!(window.GroveConfig
+    && window.GroveConfig.SUPABASE_URL && window.GroveConfig.SUPABASE_ANON_KEY);
+  const realCircle = () => (ctx.state.net && ctx.state.net.circle) || null;
+  const flows = () => (window.Grove && window.Grove.net) || null;
+  const syncer = () => (window.Grove && window.Grove.sync) || null;
+
+  function avatarPaletteFor(avatarId) {
+    const a = D.PLAYER_AVATARS[Number(avatarId) % D.PLAYER_AVATARS.length] || D.PLAYER_AVATARS[0];
+    return { petal: a.petal, center: a.center };
+  }
 
   const $ = (sel) => document.querySelector(sel);
   const esc = (s) => String(s == null ? '' : s)
@@ -199,8 +212,13 @@ const GroveUI = {};
       const stage = L.goalStage(g);
       const done = g.steps.filter(s => s.done).length;
       const pct = Math.round((done / g.steps.length) * 100);
+      const moon = realCircle() ? `
+        <button class="moon-toggle ${g.private ? 'on' : ''}" data-action="toggle-private" data-goal="${g.id}"
+          title="${g.private ? 'Private — your circle sees progress only' : 'Shared with your circle'}"
+          aria-label="Toggle goal privacy">${g.private ? '🌙' : '🌤️'}</button>` : '';
       return `
       <div class="plant-card" id="plant-${g.id}">
+        ${moon}
         ${G.plantSvg(stage, dom.color)}
         <div class="pname">${esc(g.emoji)} ${esc(g.name)}</div>
         <div class="pstage">${stageName(stage)} · ${done}/${g.steps.length} steps</div>
@@ -236,38 +254,104 @@ const GroveUI = {};
 
   // ---------- Circle ----------
   function feedIcon(type) {
-    return { step: '🌱', bloom: '🌸', struggle: '🌧️', recovery: '🌈', cheer_player: '☀️', digest: '🍃', welcome: '👋' }[type] || '🌿';
+    return { step: '🌱', bloom: '🌸', struggle: '🌧️', recovery: '🌈', cheer_player: '☀️', digest: '🍃', welcome: '👋', leave: '🍂' }[type] || '🌿';
   }
 
-  function renderCircle() {
-    const st = ctx.state;
-    const view = $('#view-circle');
+  function syncStatusChip() {
+    const s = syncer() ? syncer().status() : 'idle';
+    const label = { synced: 'synced ✓', syncing: 'syncing…', offline: 'offline — will retry', idle: 'ready' }[s] || s;
+    return `<span class="sync-chip ${s === 'offline' ? 'offline' : ''}">${label}</span>`;
+  }
 
-    const members = st.circle.members.map(m => {
-      const def = memberDef(m.id);
-      const tags = def.goals.map(g => {
-        const dom = domainById(g.domain);
-        return `<span class="goal-tag" style="background:${dom.color}">${esc(g.name)}</span>`;
-      }).join(' ');
+  function realCircleHeader() {
+    const st = ctx.state;
+    const rc = realCircle();
+    if (rc) {
       return `
+      <div class="card">
+        <div class="section-title"><h2>${esc(rc.name)} 💛</h2>${syncStatusChip()}</div>
+        <div class="invite-row">
+          <span class="invite-chip">Invite code: <b>${esc(rc.inviteCode)}</b></span>
+          <button class="btn small secondary" data-action="rc-copy-code">Copy invite link</button>
+          <button class="btn small accent" data-action="rc-boost-open">Ask for a boost 💛</button>
+        </div>
+        <p class="sub" style="margin-top:8px">${esc(D.REAL_CIRCLE.spiritHint)}</p>
+      </div>`;
+    }
+    if (netConfigured()) {
+      return `
+      <div class="card">
+        <div class="section-title"><h2>${esc(D.REAL_CIRCLE.makeRealTitle)}</h2></div>
+        <p class="sub" style="margin:6px 0 10px">${esc(D.REAL_CIRCLE.makeRealBody)}</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn accent" data-action="rc-create-open">Start a circle</button>
+          <button class="btn secondary" data-action="rc-join-open">Join with a code</button>
+        </div>
+      </div>`;
+    }
+    return `
+      <div class="card">
+        <div class="section-title"><h2>${esc(D.REAL_CIRCLE.makeRealTitle)}</h2></div>
+        <p class="sub" style="margin-top:6px">${esc(D.REAL_CIRCLE.setupBody)}</p>
+      </div>`;
+  }
+
+  function memberCardHtml(entry) {
+    if (entry.kind === 'real') {
+      const m = entry.member;
+      return `
+      <div class="member-card">
+        <span class="ribbon-real">real</span>
+        ${G.avatarSvg(avatarPaletteFor(m.avatarId))}
+        <div class="mname">${esc(m.name)}</div>
+        <div class="mbio">Growing right beside you — cheer her on.</div>
+        <button class="btn small accent" data-action="cheer-real" data-member="${esc(m.id)}">Send sunshine ☀️</button>
+      </div>`;
+    }
+    const def = entry.member;
+    const tags = def.goals.map(g => {
+      const dom = domainById(g.domain);
+      return `<span class="goal-tag" style="background:${dom.color}">${esc(g.name)}</span>`;
+    }).join(' ');
+    return `
       <div class="member-card">
         ${G.avatarSvg(def.palette)}
         <div class="mname">${esc(def.name)}</div>
+        ${realCircle() ? `<div class="spirit-tag">${esc(D.REAL_CIRCLE.spiritTag)}</div>` : ''}
         <div class="mbio">${esc(def.bio)}</div>
         <div style="display:flex;flex-direction:column;gap:4px;align-items:center;margin:6px 0">${tags}</div>
-        <button class="btn small accent" data-action="cheer" data-member="${m.id}">Send sunshine ☀️</button>
+        <button class="btn small accent" data-action="cheer" data-member="${def.id}">Send sunshine ☀️</button>
       </div>`;
-    }).join('');
+  }
 
-    const feed = st.circle.feed.slice().sort((a, b) => b.ts - a.ts).slice(0, 25).map(e => {
-      const def = memberDef(e.memberId);
-      if (!def) return '';
-      const canCheer = !e.cheered && e.type !== 'cheer_player';
+  function feedItemHtml(e) {
+    const st = ctx.state;
+    if (e.real) {
+      const own = realCircle() && e.memberId === st.net.circle.memberId;
+      const canCheer = !own && !e.cheered
+        && e.type !== 'cheer_player' && e.type !== 'welcome' && e.type !== 'leave';
       const btn = canCheer
-        ? `<button class="btn small ${e.type === 'struggle' ? 'accent' : 'secondary'}" data-action="cheer" data-member="${e.memberId}" data-event="${e.id}">
+        ? `<button class="btn small ${e.type === 'struggle' ? 'accent' : 'secondary'}" data-action="cheer-real" data-member="${esc(e.memberId)}" data-event="${esc(e.id)}">
             ${e.type === 'struggle' ? 'Send encouragement 💛' : 'Send sunshine ☀️'}</button>`
         : (e.cheered ? `<button class="btn small cheered" disabled>Sunshine sent ✓</button>` : '');
       return `
+      <div class="feed-item ${e.type}">
+        <div class="fava">${G.avatarSvg(avatarPaletteFor(e.avatarId))}</div>
+        <div style="flex:1">
+          <div class="ftext">${feedIcon(e.type)} ${esc(e.text)}</div>
+          <div class="ftime">${own ? 'you' : esc(e.name)} · ${timeAgo(e.ts)}</div>
+          ${btn ? `<div style="margin-top:6px">${btn}</div>` : ''}
+        </div>
+      </div>`;
+    }
+    const def = memberDef(e.memberId);
+    if (!def) return '';
+    const canCheer = !e.cheered && e.type !== 'cheer_player';
+    const btn = canCheer
+      ? `<button class="btn small ${e.type === 'struggle' ? 'accent' : 'secondary'}" data-action="cheer" data-member="${e.memberId}" data-event="${e.id}">
+          ${e.type === 'struggle' ? 'Send encouragement 💛' : 'Send sunshine ☀️'}</button>`
+      : (e.cheered ? `<button class="btn small cheered" disabled>Sunshine sent ✓</button>` : '');
+    return `
       <div class="feed-item ${e.type}">
         <div class="fava">${G.avatarSvg(def.palette)}</div>
         <div style="flex:1">
@@ -276,13 +360,23 @@ const GroveUI = {};
           ${btn ? `<div style="margin-top:6px">${btn}</div>` : ''}
         </div>
       </div>`;
-    }).join('');
+  }
+
+  function renderCircle() {
+    const st = ctx.state;
+    const view = $('#view-circle');
+    const roster = Social().roster(st, D);
+    const members = roster.map(memberCardHtml).join('');
+    const feed = st.circle.feed.slice().sort((a, b) => b.ts - a.ts).slice(0, 25)
+      .map(feedItemHtml).join('');
 
     view.innerHTML = `
+      ${realCircleHeader()}
       <div class="sunshine-banner">☀️ <div><strong>${st.sunshineSent}</strong> sunshine sent —
         cheering others counts as much as your own steps here.</div></div>
       <div class="card">
-        <div class="section-title"><h2>Your Circle 💛</h2><span class="sub">five women, real goals, no judgment</span></div>
+        <div class="section-title"><h2>Your Circle 💛</h2>
+          <span class="sub">${realCircle() ? 'real friends and garden spirits' : 'five women, real goals, no judgment'}</span></div>
         <div class="member-scroll" style="margin-top:10px">${members}</div>
       </div>
       <div class="card">
@@ -395,7 +489,13 @@ const GroveUI = {};
           <input type="file" id="import-file" accept=".json,application/json" class="hidden">
           <button class="btn small" style="background:var(--danger)" data-action="reset">Start over</button>
         </div>
-        <p class="sub" style="margin-top:6px">Everything lives in this browser only. Export a backup any time.</p>
+        <p class="sub" style="margin-top:6px">Everything lives in this browser only. Export a backup any time
+          ${realCircle() ? '— it includes your circle membership.' : '.'}</p>
+        ${realCircle() ? `
+        <div class="settings-row" style="margin-top:10px">
+          <span class="invite-chip">Circle: <b>${esc(realCircle().name)}</b></span>
+          <button class="btn small" style="background:var(--danger)" data-action="rc-leave">Leave circle</button>
+        </div>` : ''}
       </div>`;
   }
 
@@ -405,7 +505,7 @@ const GroveUI = {};
       onboarding: isOnboarding, stage: isOnboarding ? 'welcome' : 'template',
       name: ctx.state.player.name || '', avatarId: ctx.state.player.avatarId || 0,
       accentId: ctx.state.player.accentId || 0,
-      domain: 'career', goalName: '', goalEmoji: '🌱', steps: [],
+      domain: 'career', goalName: '', goalEmoji: '🌱', steps: [], private: false,
     };
     renderWizard();
   }
@@ -468,6 +568,9 @@ const GroveUI = {};
         <div class="sub" style="font-weight:600;margin-bottom:4px">Tiny steps (${ob.steps.length})</div>
         <div class="steps-editor">${stepRows}</div>
         <button class="btn secondary small" data-action="ob-add-step">+ add a step</button>
+        ${netConfigured() ? `<label class="privacy-row">
+          <input type="checkbox" id="ob-private" ${ob.private ? 'checked' : ''}>
+          🌙 keep this goal private to me</label>` : ''}
         <div class="modal-actions">
           <button class="btn secondary" data-action="ob-back">← Back</button>
           <button class="btn accent" data-action="ob-finish">🌱 Plant this goal</button>
@@ -480,6 +583,8 @@ const GroveUI = {};
     if (nameEl) ob.name = nameEl.value.trim();
     const goalEl = $('#ob-goal-name');
     if (goalEl) ob.goalName = goalEl.value.trim();
+    const privEl = $('#ob-private');
+    if (privEl) ob.private = privEl.checked;
     document.querySelectorAll('.ob-step').forEach(inp => {
       ob.steps[Number(inp.dataset.idx)] = inp.value;
     });
@@ -494,7 +599,7 @@ const GroveUI = {};
     const goal = {
       id: uid('g'), name: ob.goalName, domain: ob.domain, emoji: ob.goalEmoji,
       steps: steps.map(text => ({ id: uid('s'), text, done: false, doneAt: null })),
-      createdAt: Date.now(), bloomedAt: null, reflection: null,
+      createdAt: Date.now(), bloomedAt: null, reflection: null, private: !!ob.private,
     };
     st.goals.push(goal);
 
@@ -518,10 +623,16 @@ const GroveUI = {};
     }
     const newBadges = L.evaluateBadges(st, Date.now());
     announceBadges(newBadges);
+    const wasOnboarding = ob.onboarding;
     ob = null;
     closeModal();
     ctx.save();
     renderAll();
+    if (wasOnboarding && pendingJoin && netConfigured()) {
+      const code = pendingJoin;
+      pendingJoin = null;
+      setTimeout(() => { switchView('circle'); openJoinModal(code); }, 700);
+    }
   }
 
   function applyAccent() {
@@ -628,6 +739,137 @@ const GroveUI = {};
     renderAll();
   }
 
+  // ---------- real circle actions ----------
+  function openCreateModal() {
+    showModal(`
+      <h2>Start a circle 💛</h2>
+      <p class="sub">Name it, then share the invite code with up to four women you trust.</p>
+      <label class="sub" style="font-weight:600">Circle name</label>
+      <input class="text-input" id="rc-name" maxlength="40" placeholder="e.g. The Tuesday Bloomers" style="margin:6px 0 4px">
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Cancel</button>
+        <button class="btn accent" data-action="rc-create">Create circle</button>
+      </div>`);
+  }
+
+  function openJoinModal(code) {
+    showModal(`
+      <h2>Join a circle 🌱</h2>
+      <p class="sub">Enter the six-letter code your friend shared.</p>
+      <input class="text-input" id="rc-code" maxlength="6" placeholder="ABC234" value="${esc(code || '')}"
+        style="margin:10px 0 4px;text-transform:uppercase;letter-spacing:.2em;font-weight:700">
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Cancel</button>
+        <button class="btn accent" data-action="rc-join">Join</button>
+      </div>`);
+  }
+
+  function openBoostModal() {
+    showModal(`
+      <h2>Ask for a boost 💛</h2>
+      <p class="sub">${esc(D.REAL_CIRCLE.boostHint)}</p>
+      <textarea class="text-input boost-composer" id="boost-text" maxlength="280"
+        placeholder="${esc(D.REAL_CIRCLE.boostPlaceholder)}"></textarea>
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Not now</button>
+        <button class="btn accent" data-action="rc-boost-send">Send to my circle</button>
+      </div>`);
+  }
+
+  async function handleCreateCircle() {
+    const name = ($('#rc-name') ? $('#rc-name').value.trim() : '') || 'Our Grove';
+    if (!flows()) return;
+    closeModal();
+    toast('Planting your circle…');
+    const r = await flows().createCircleFlow(name);
+    if (r.ok) toast(`Circle “${esc(name)}” is live — share the code! 💛`, 'rose');
+    else toast(esc(D.REAL_CIRCLE.joinErrors[r.error] || D.REAL_CIRCLE.joinErrors.offline));
+    renderAll();
+  }
+
+  async function handleJoinCircle() {
+    const code = ($('#rc-code') ? $('#rc-code').value.trim().toUpperCase() : '');
+    if (code.length !== 6) { toast('The code has six characters 🌱'); return; }
+    if (!flows()) return;
+    closeModal();
+    toast('Finding your circle…');
+    const r = await flows().joinCircleFlow(code);
+    if (r.ok) toast(`Welcome to “${esc(r.circleName)}” 💛`, 'rose');
+    else toast(esc(D.REAL_CIRCLE.joinErrors[r.error] || D.REAL_CIRCLE.joinErrors.offline));
+    renderAll();
+  }
+
+  function copyInviteLink() {
+    const rc = realCircle();
+    if (!rc) return;
+    const link = (location.origin && location.origin !== 'null')
+      ? location.origin + location.pathname + '#join=' + rc.inviteCode
+      : rc.inviteCode;
+    const fallback = () => window.prompt('Copy this invite link:', link);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link)
+        .then(() => toast('Invite link copied — send it to a friend 💌', 'rose'), fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function handleBoostSend() {
+    const text = ($('#boost-text') ? $('#boost-text').value.trim() : '');
+    if (!text) { toast('Say a little about what’s heavy 💛'); return; }
+    const st = ctx.state;
+    if (!realCircle() || !syncer()) return;
+    const ev = Social().buildStruggleEvent(text);
+    st.net.playerStruggle = { eventKey: ev.client_key, postedAt: Date.now(), supporters: [] };
+    st.circle.feed.push({
+      id: 'r-' + ev.client_key, ts: Date.now(), type: 'struggle',
+      text: `${st.player.name || 'You'}: “${ev.payload.text}”`,
+      real: true, memberId: st.net.circle.memberId, name: st.player.name || 'You',
+      avatarId: String(st.player.avatarId), cheered: false,
+    });
+    syncer().queue(ev);
+    closeModal();
+    toast('Your circle will see it — asking is a strength 💛', 'rose');
+    ctx.save();
+    renderAll();
+  }
+
+  function handleCheerReal(memberId, eventId) {
+    const st = ctx.state;
+    if (!realCircle() || !syncer()) return;
+    const phrase = D.CHEER_PHRASES[Math.floor(Math.random() * D.CHEER_PHRASES.length)];
+    if (eventId) {
+      const item = st.circle.feed.find(e => e.id === eventId);
+      if (item) item.cheered = true;
+    }
+    L.cheer(st, Date.now());
+    syncer().queue(Social().buildCheerEvent(memberId, phrase.id));
+    const m = st.net.members.find(x => x.id === memberId);
+    toast(`☀️ “${esc(phrase.text)}” → ${esc(m ? m.name : 'your friend')} · +${L.XP.CHEER} xp`);
+    announceBadges(L.evaluateBadges(st, Date.now()));
+    ctx.save();
+    renderAll();
+  }
+
+  async function handleLeaveCircle() {
+    if (!window.confirm('Leave this circle? Your garden stays with you; your seat opens up.')) return;
+    if (!flows()) return;
+    const r = await flows().leaveCircleFlow();
+    toast(r.ok ? 'You stepped out of the circle 🍂' : esc(D.REAL_CIRCLE.joinErrors.offline));
+    renderAll();
+  }
+
+  function handleTogglePrivate(goalId) {
+    const g = ctx.state.goals.find(x => x.id === goalId);
+    if (!g) return;
+    g.private = !g.private;
+    toast(g.private
+      ? 'Kept as a quiet goal 🌙 — your circle sees progress only'
+      : 'Shared with your circle 🌤️');
+    ctx.save();
+    renderAll();
+  }
+
   function handleBuy(itemId) {
     const st = ctx.state;
     const item = D.SHOP_ITEMS.find(i => i.id === itemId);
@@ -697,6 +939,16 @@ const GroveUI = {};
     else if (a === 'ob-finish') finishWizard();
     else if (a === 'save-reflection') saveReflection(btn.dataset.goal, false);
     else if (a === 'skip-reflection') saveReflection(btn.dataset.goal, true);
+    else if (a === 'rc-create-open') openCreateModal();
+    else if (a === 'rc-join-open') openJoinModal('');
+    else if (a === 'rc-create') handleCreateCircle();
+    else if (a === 'rc-join') handleJoinCircle();
+    else if (a === 'rc-copy-code') copyInviteLink();
+    else if (a === 'rc-boost-open') openBoostModal();
+    else if (a === 'rc-boost-send') handleBoostSend();
+    else if (a === 'rc-leave') handleLeaveCircle();
+    else if (a === 'cheer-real') handleCheerReal(btn.dataset.member, btn.dataset.event);
+    else if (a === 'toggle-private') handleTogglePrivate(btn.dataset.goal);
     else if (a === 'close-modal') { ob = null; closeModal(); }
     else if (a === 'export') handleExport();
     else if (a === 'import-trigger') $('#import-file').click();
@@ -726,6 +978,8 @@ const GroveUI = {};
   GroveUI.switchView = switchView;
   GroveUI.toast = toast;
   GroveUI.startOnboarding = function () { startWizard(true); };
+  GroveUI.openJoinModal = openJoinModal;
+  GroveUI.setPendingJoin = function (code) { pendingJoin = code; };
   GroveUI.comebackLine = function () {
     const lines = D.COMEBACK_LINES;
     return lines[Math.floor(Math.random() * lines.length)];
