@@ -814,9 +814,7 @@ const GroveUI = {};
   function copyInviteLink() {
     const rc = realCircle();
     if (!rc) return;
-    const link = (location.origin && location.origin !== 'null')
-      ? location.origin + location.pathname + '#join=' + rc.inviteCode
-      : rc.inviteCode;
+    const link = flows() ? flows().buildInviteLink(rc.inviteCode) : rc.inviteCode;
     const fallback = () => window.prompt('Copy this invite link:', link);
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(link)

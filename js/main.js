@@ -1,6 +1,15 @@
 'use strict';
 // Grove boot — load, catch up the living circle, connect the real one, render.
+// Boot is deferred to DOMContentLoaded so the platform bridge module
+// (src/main.ts → window.GrovePlatform) always runs first on App Deploy hosts.
 (function () {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+
+  function boot() {
   const D = window.GroveData, L = window.GroveLogic, Sim = window.GroveSim,
     S = window.GroveState, UI = window.GroveUI, Social = window.GroveSocial,
     Net = window.GroveNet, Sync = window.GroveSync;
@@ -27,6 +36,8 @@
   // ---------- real-circle plumbing ----------
   const configured = () => !!(window.GroveConfig
     && window.GroveConfig.SUPABASE_URL && window.GroveConfig.SUPABASE_ANON_KEY);
+  const onPlatform = () => !!window.GrovePlatform;
+  const netAvailable = () => onPlatform() || configured();
 
   let client = null;
   let sync = null;
@@ -45,13 +56,28 @@
     if (sync) { sync.stop(); sync = null; }
     window.Grove.sync = null;
     client = null;
-    if (!configured()) return;
-    client = Net.makeClient({
-      url: window.GroveConfig.SUPABASE_URL,
-      anonKey: window.GroveConfig.SUPABASE_ANON_KEY,
-      session: state.net.session,
-      onSession(s) { state.net.session = s; S.save(state); },
-    });
+    if (onPlatform()) {
+      client = window.GroveNetAppDeploy.makeClient({
+        platform: window.GrovePlatform,
+        session: state.net.memberKey
+          ? { platform: 'appdeploy', memberKey: state.net.memberKey } : null,
+        circleRef: () => state.net.circle,
+        onSession(s) {
+          state.net.memberKey = s ? s.memberKey : null;
+          state.net.platform = 'appdeploy';
+          S.save(state);
+        },
+      });
+    } else if (configured()) {
+      client = Net.makeClient({
+        url: window.GroveConfig.SUPABASE_URL,
+        anonKey: window.GroveConfig.SUPABASE_ANON_KEY,
+        session: state.net.session,
+        onSession(s) { state.net.session = s; state.net.platform = 'supabase'; S.save(state); },
+      });
+    } else {
+      return;
+    }
     sync = Sync.makeSync({ ctx, client, logic: L, social: Social, data: D, onUpdate: onSyncUpdate });
     window.Grove.sync = sync;
     if (state.net.circle) {
@@ -116,7 +142,11 @@
       });
       if (!r.ok) return r;
       adoptCircle(r.circle, r.memberId, r.members);
+      if (onPlatform()) window.GrovePlatform.invitesClient.clearPendingCode();
       return { ok: true, circleName: r.circle.name };
+    },
+    buildInviteLink(code) {
+      return client ? client.buildInviteLink(code) : ('#join=' + code);
     },
     async leaveCircleFlow() {
       if (!client || !state.net.circle) return { ok: false, error: 'offline' };
@@ -130,6 +160,7 @@
       state.net.cursor = 0;
       state.net.outbox = [];
       state.net.playerStruggle = null;
+      state.net.memberKey = null;   // the key belonged to that circle's member row
       rearmChallenge();
       Social.syncSpiritSlots(state, D); // spirits retake every seat
       S.save(state);
@@ -138,6 +169,11 @@
   };
 
   function pendingJoinCode() {
+    // Platform invite URLs carry appdeploy_invite; the mirror uses #join=.
+    if (onPlatform()) {
+      const code = window.GrovePlatform.invitesClient.getPendingCode();
+      return code ? String(code).toUpperCase() : null;
+    }
     const m = (location.hash || '').match(/^#join=([A-Za-z0-9]{6})$/i);
     return m ? m[1].toUpperCase() : null;
   }
@@ -156,7 +192,10 @@
     S.save(state);
     UI.renderAll();
     const code = pendingJoinCode();
-    if (code && configured()) { consumeHash(); UI.setPendingJoin(code); }
+    if (code && netAvailable()) {
+      if (!onPlatform()) consumeHash();   // platform helper already cleaned the URL
+      UI.setPendingJoin(code);
+    }
     connectNet();
     UI.startOnboarding();
     return;
@@ -180,8 +219,8 @@
   UI.renderAll();
 
   const joinCode = pendingJoinCode();
-  if (joinCode && configured()) {
-    consumeHash();
+  if (joinCode && netAvailable()) {
+    if (!onPlatform()) consumeHash();
     UI.switchView('circle');
     UI.openJoinModal(joinCode);
   }
@@ -191,4 +230,5 @@
   } else if (events.length > 0) {
     UI.toast(`🍃 Your circle was busy while you were away — ${events.length} update${events.length > 1 ? 's' : ''} in the feed.`);
   }
+  } // end boot
 })();
