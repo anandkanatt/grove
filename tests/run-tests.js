@@ -453,6 +453,72 @@ test('event builders respect privacy and shape', () => {
   assert(Social.uuid() !== Social.uuid(), 'uuids differ');
 });
 
+// ---------- social: applyRemote ----------
+function row(id, memberId, type, payload) {
+  return { id, circle_id: 'c1', member_id: memberId, client_key: 'k' + id,
+    type, payload, created_at: '2026-07-03T10:00:00Z' };
+}
+
+test('applyRemote classifies foreign steps and stays pure', () => {
+  const st = socialState();
+  const snapshot = JSON.stringify(st);
+  const res = Social.applyRemote(st, D, [
+    row(40, 'm2', 'step', { goalTitle: 'Run 5K', stage: 2 }),
+    row(41, 'm2', 'step', { goalTitle: null, stage: 1 }),
+  ], 'me');
+  assertEq(res.feedItems.length, 2);
+  const pub = res.feedItems[0], priv = res.feedItems[1];
+  assertEq(pub.type, 'step');
+  assertEq(pub.real, true);
+  assertEq(pub.name, 'Rhea');
+  assertEq(pub.cheered, false);
+  assert(pub.text.includes('Run 5K'), 'title in text');
+  assert(priv.text.includes('quiet goal'), 'private goals stay quiet');
+  assertEq(res.challengeSteps, 2);
+  assertEq(res.maxId, 41);
+  assertEq(JSON.stringify(st), snapshot, 'applyRemote never mutates state');
+});
+test('applyRemote skips own events but advances maxId', () => {
+  const res = Social.applyRemote(socialState(), D,
+    [row(9, 'me', 'step', { goalTitle: 'x', stage: 1 })], 'me');
+  assertEq(res.feedItems.length, 0);
+  assertEq(res.challengeSteps, 0);
+  assertEq(res.maxId, 9);
+});
+test('applyRemote surfaces cheers addressed to me', () => {
+  const res = Social.applyRemote(socialState(), D, [
+    row(50, 'm2', 'cheer', { toMemberId: 'me', phraseId: 'cp1' }),
+  ], 'me');
+  assertEq(res.cheersForMe.length, 1);
+  assertEq(res.cheersForMe[0].fromMemberId, 'm2');
+  assertEq(res.cheersForMe[0].name, 'Rhea');
+  assertEq(res.cheersForMe[0].phrase, D.CHEER_PHRASES[0].text);
+  assertEq(res.feedItems[0].type, 'cheer_player');
+  assert(res.feedItems[0].text.includes('you'), 'addressed to you');
+});
+test('applyRemote credits recoveries I helped with', () => {
+  const res = Social.applyRemote(socialState(), D, [
+    row(60, 'm2', 'recover', { supporterMemberIds: ['me'] }),
+  ], 'me');
+  assertEq(res.recoveredWithMyHelp, ['Rhea']);
+  assertEq(res.feedItems[0].type, 'recovery');
+  assert(res.feedItems[0].text.includes('your sunshine helped'), 'credit in text');
+});
+test('applyRemote flags membership changes and ignores unknown types', () => {
+  const res = Social.applyRemote(socialState(), D, [
+    row(70, 'm2', 'join', { name: 'Rhea' }),
+    row(71, 'm2', 'confetti', {}),
+  ], 'me');
+  assertEq(res.memberChanged, true);
+  assertEq(res.feedItems.length, 1);
+  assertEq(res.feedItems[0].type, 'welcome');
+  assertEq(res.maxId, 71, 'unknown types still advance the cursor');
+  const strug = Social.applyRemote(socialState(), D,
+    [row(72, 'm2', 'struggle', { text: 'stuck this week' })], 'me');
+  assertEq(strug.feedItems[0].type, 'struggle');
+  assert(strug.feedItems[0].text.includes('stuck this week'), 'struggle text shown');
+});
+
 // ---------- phase 2 content ----------
 test('curated cheer phrases are plentiful and unique', () => {
   assert(D.CHEER_PHRASES.length >= 8, 'cheer phrases >=8');

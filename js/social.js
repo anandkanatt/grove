@@ -68,5 +68,72 @@ GroveSocial.buildLeaveEvent = function (name) {
   return makeEvent('leave', { name });
 };
 
+// Classify events pulled from the server into UI-ready results. PURE: reads
+// state.net.members for names but never mutates state — main.js applies these.
+GroveSocial.applyRemote = function (state, data, events, selfMemberId) {
+  const members = (state.net && state.net.members) || [];
+  const memberOf = (id) => members.find(x => x.id === id) || null;
+  const nameOf = (id) => { const m = memberOf(id); return m ? m.name : 'A friend'; };
+  const phraseOf = (pid) => {
+    const p = data.CHEER_PHRASES.find(x => x.id === pid);
+    return p ? p.text : 'sending sunshine';
+  };
+  const res = { feedItems: [], challengeSteps: 0, cheersForMe: [],
+    recoveredWithMyHelp: [], memberChanged: false, maxId: 0 };
+
+  for (const ev of events) {
+    if (typeof ev.id === 'number' && ev.id > res.maxId) res.maxId = ev.id;
+    if (ev.member_id === selfMemberId) continue;
+    const name = nameOf(ev.member_id);
+    const p = ev.payload || {};
+    let type, text;
+
+    if (ev.type === 'step') {
+      type = 'step';
+      text = p.goalTitle
+        ? `${name} took a step toward “${p.goalTitle}”`
+        : `${name} tended ${data.REAL_CIRCLE.quietGoalLabel}`;
+      res.challengeSteps += 1;
+    } else if (ev.type === 'bloom') {
+      type = 'bloom';
+      text = p.goalTitle
+        ? `${name}’s “${p.goalTitle}” bloomed! A goal finished. 🌸`
+        : `One of ${name}’s quiet goals bloomed 🌸`;
+    } else if (ev.type === 'struggle') {
+      type = 'struggle';
+      text = `${name}: “${p.text || ''}”`;
+    } else if (ev.type === 'recover') {
+      type = 'recovery';
+      const helped = (p.supporterMemberIds || []).includes(selfMemberId);
+      text = `${name} is back on her feet 🌈${helped ? ' — your sunshine helped' : ''}`;
+      if (helped) res.recoveredWithMyHelp.push(name);
+    } else if (ev.type === 'cheer') {
+      type = 'cheer_player';
+      const phrase = phraseOf(p.phraseId);
+      const toMe = p.toMemberId === selfMemberId;
+      text = `${name} sent ${toMe ? 'you' : nameOf(p.toMemberId)} sunshine ☀️ — “${phrase}”`;
+      if (toMe) res.cheersForMe.push({ fromMemberId: ev.member_id, name, phrase });
+    } else if (ev.type === 'join') {
+      type = 'welcome';
+      text = `${p.name || name} joined the circle 🌱`;
+      res.memberChanged = true;
+    } else if (ev.type === 'leave') {
+      type = 'leave';
+      text = `${p.name || name} stepped out of the circle — wish her well 🍂`;
+      res.memberChanged = true;
+    } else {
+      continue; // unknown event types: forward compatibility, cursor still advances
+    }
+
+    const m = memberOf(ev.member_id);
+    res.feedItems.push({
+      id: 'r' + ev.id, ts: Date.parse(ev.created_at) || 0, type, text,
+      real: true, memberId: ev.member_id, name,
+      avatarId: m ? m.avatarId : '0', cheered: false,
+    });
+  }
+  return res;
+};
+
 if (typeof module !== 'undefined' && module.exports) module.exports = GroveSocial;
 if (typeof window !== 'undefined') window.GroveSocial = GroveSocial;
