@@ -677,6 +677,87 @@ test('network failures and timeouts resolve offline, never throw', async () => {
   assertEq(r2.offline, true);
 });
 
+// ---------- net + fake supabase (integration over real HTTP) ----------
+const FakeSupabase = require('../tools/fake-supabase.js');
+
+test('two clients share a circle end to end', async () => {
+  const fake = FakeSupabase.createFake();
+  const port = await fake.listen(0);
+  const base = 'http://127.0.0.1:' + port;
+  const mk = () => Net.makeClient({ url: base, anonKey: 'anon', fetchFn: fetch });
+  try {
+    const A = mk(), B = mk();
+    assertEq((await A.signInAnon()).ok, true);
+    assertEq((await B.signInAnon()).ok, true);
+
+    const made = await A.createCircle({ circleName: 'Us', memberName: 'Anu', avatarId: '0', accentId: '0' });
+    assertEq(made.ok, true);
+    assert(/^[A-HJ-KM-NP-Z2-9]{6}$/.test(made.circle.inviteCode), 'code uses the unambiguous alphabet');
+
+    const joined = await B.joinCircle({ code: made.circle.inviteCode, memberName: 'Rhea', avatarId: '1', accentId: '1' });
+    assertEq(joined.ok, true);
+    assertEq(joined.members.length, 2);
+    const again = await B.joinCircle({ code: made.circle.inviteCode, memberName: 'Rhea', avatarId: '1', accentId: '1' });
+    assertEq(again.members.length, 2, 'join is idempotent');
+    assertEq((await B.joinCircle({ code: 'XXXXXX', memberName: 'R', avatarId: '1', accentId: '1' })).error,
+      'not-found');
+
+    const cid = made.circle.id;
+    const stepEv = { client_key: '11111111-1111-4111-8111-111111111111',
+      type: 'step', payload: { goalTitle: 'Run', stage: 1 } };
+    assertEq((await B.pushEvents(cid, joined.memberId, [stepEv])).ok, true);
+    assertEq((await B.pushEvents(cid, joined.memberId, [stepEv])).ok, true, 'duplicate push tolerated');
+
+    const pull = await A.pullEvents(cid, 0);
+    assertEq(pull.ok, true);
+    assertEq(pull.events.length, 3, '2 joins + 1 step, deduped');
+    assert(pull.events.every((e, i) => i === 0 || e.id > pull.events[i - 1].id), 'ascending ids');
+    assertEq((await A.pullEvents(cid, pull.cursor)).events.length, 0, 'cursor is complete');
+
+    const C = mk();
+    await C.signInAnon();
+    const spy = await C.pullEvents(cid, 0);
+    assertEq(spy.ok, true);
+    assertEq(spy.events.length, 0, 'RLS-like filtering: non-members read nothing');
+    const sneak = await C.pushEvents(cid, joined.memberId,
+      [{ client_key: '22222222-2222-4222-8222-222222222222', type: 'step', payload: {} }]);
+    assertEq(sneak.ok, false, 'non-members cannot write');
+
+    const left = await B.leaveCircle(cid, joined.memberId,
+      { client_key: '33333333-3333-4333-8333-333333333333', type: 'leave', payload: { name: 'Rhea' } });
+    assertEq(left.ok, true);
+    assertEq((await A.fetchMembers(cid)).members.length, 1, 'B removed from members');
+    assert((await A.pullEvents(cid, pull.cursor)).events.some(e => e.type === 'leave'),
+      'leave event visible');
+
+    for (let i = 0; i < 4; i++) {
+      const X = mk();
+      await X.signInAnon();
+      assertEq((await X.joinCircle({ code: made.circle.inviteCode, memberName: 'M' + i,
+        avatarId: '0', accentId: '0' })).ok, true, 'join ' + i);
+    }
+    const Y = mk();
+    await Y.signInAnon();
+    assertEq((await Y.joinCircle({ code: made.circle.inviteCode, memberName: 'Zoe',
+      avatarId: '0', accentId: '0' })).error, 'full', 'five real members max');
+  } finally {
+    fake.close();
+  }
+});
+test('the fake refreshes rotated tokens like gotrue', async () => {
+  const fake = FakeSupabase.createFake();
+  const port = await fake.listen(0);
+  try {
+    const A = Net.makeClient({ url: 'http://127.0.0.1:' + port, anonKey: 'anon', fetchFn: fetch });
+    await A.signInAnon();
+    fake.state.tokens.delete(A.getSession().access); // simulate expiry
+    const made = await A.createCircle({ circleName: 'Us', memberName: 'Anu', avatarId: '0', accentId: '0' });
+    assertEq(made.ok, true, '401 → refresh → retry succeeded');
+  } finally {
+    fake.close();
+  }
+});
+
 // ---------- circle simulation ----------
 function simState(lastVisitTs) {
   const st = S.defaultState(lastVisitTs);
