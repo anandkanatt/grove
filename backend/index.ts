@@ -10,9 +10,10 @@ import {
 
 // ---------- data access ----------
 
-async function getMember(circleId: string, memberId: string, memberKey: string) {
+async function getMember(circleId: string, memberId: string, memberKey: string):
+  Promise<(Record<string, any> & { id: string }) | null> {
   if (!circleId || !memberId || !memberKey) return null;
-  const [m] = await db.get('members', [memberId]);
+  const [m] = await db.get<Record<string, any>>('members', [memberId]);
   if (!m || m.circleId !== circleId || m.memberKey !== memberKey) return null;
   // db.get returns the stored record without its id (unlike db.list) — attach
   // it, or every event written with member.id loses its author.
