@@ -107,7 +107,7 @@ Worth knowing:
 ## Development
 
 ```
-node tests/run-tests.js     # 79 logic/sim/state/social/net/sync tests, no dependencies
+node tests/run-tests.js     # 94 logic/sim/state/social/net/sync tests, no dependencies
 node tools/dev-server.js    # optional static server at http://localhost:8478
 node tools/fake-supabase.js # in-memory supabase double for local circles
 ```
