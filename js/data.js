@@ -447,5 +447,36 @@ GroveData.ACCENTS = [
   { id: 4, name: 'Marigold', color: '#d9a441' },
 ];
 
+// One-tap cheers for real circles — picked, not typed, so every sunshine stays warm.
+GroveData.CHEER_PHRASES = [
+  { id: 'cp1', text: 'You’re doing the thing!! ☀️' },
+  { id: 'cp2', text: 'Small step, loud applause 👏' },
+  { id: 'cp3', text: 'Saw that. Proud of you.' },
+  { id: 'cp4', text: 'Your garden looks good on you 🌿' },
+  { id: 'cp5', text: 'That counted. It all counts.' },
+  { id: 'cp6', text: 'Quietly cheering very loudly 📣' },
+  { id: 'cp7', text: 'One more brick in the path 🧱' },
+  { id: 'cp8', text: 'Sunshine incoming — you earned it ☀️' },
+  { id: 'cp9', text: 'Keep going, keep glowing 🌼' },
+  { id: 'cp10', text: 'You showed up. That’s the whole game.' },
+];
+
+// Copy for the real-circles surface. Tone: warm, capable, never scolding.
+GroveData.REAL_CIRCLE = {
+  spiritTag: '🌿 garden spirit',
+  spiritHint: 'Garden spirits keep your circle lively until friends fill the seats.',
+  makeRealTitle: 'Make it real 💛',
+  makeRealBody: 'Grow alongside women you actually know. Start a circle and share the invite code, or join a friend’s.',
+  setupBody: 'Real circles need a tiny (free) backend. If a friend shared Grove with you, use her link — or see “Make it real” in the README to set one up in about ten minutes.',
+  boostPlaceholder: 'What’s feeling heavy this week?',
+  boostHint: 'Only your circle sees this. Asking is a strength.',
+  quietGoalLabel: 'a quiet goal 🌙',
+  joinErrors: {
+    'not-found': 'That code doesn’t match any circle — double-check it with your friend.',
+    'full': 'That circle is full (five friends max) — maybe start a new one together?',
+    'offline': 'Can’t reach the grove right now — we’ll keep trying quietly.',
+  },
+};
+
 if (typeof module !== 'undefined' && module.exports) module.exports = GroveData;
 if (typeof window !== 'undefined') window.GroveData = GroveData;

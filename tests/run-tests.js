@@ -394,6 +394,30 @@ test('affirmations, comeback lines, badges, shop, avatars', () => {
   assert(D.ACCENTS.length >= 4, 'accents >=4');
 });
 
+// ---------- phase 2 content ----------
+test('curated cheer phrases are plentiful and unique', () => {
+  assert(D.CHEER_PHRASES.length >= 8, 'cheer phrases >=8');
+  const ids = new Set();
+  for (const p of D.CHEER_PHRASES) {
+    assert(p.id && typeof p.text === 'string' && p.text.length > 0, 'phrase fields');
+    ids.add(p.id);
+  }
+  assertEq(ids.size, D.CHEER_PHRASES.length, 'unique phrase ids');
+});
+test('real-circle copy block is complete', () => {
+  const rc = D.REAL_CIRCLE;
+  assert(rc && typeof rc === 'object', 'REAL_CIRCLE exists');
+  for (const key of ['spiritTag', 'spiritHint', 'makeRealTitle', 'makeRealBody',
+    'setupBody', 'boostPlaceholder', 'boostHint', 'quietGoalLabel']) {
+    assert(typeof rc[key] === 'string' && rc[key].length > 0, `missing copy: ${key}`);
+  }
+  for (const key of ['not-found', 'full', 'offline']) {
+    assert(typeof rc.joinErrors[key] === 'string' && rc.joinErrors[key].length > 0,
+      `missing join error copy: ${key}`);
+  }
+  assertEq(rc.quietGoalLabel, 'a quiet goal 🌙');
+});
+
 // ---------- circle simulation ----------
 function simState(lastVisitTs) {
   const st = S.defaultState(lastVisitTs);
