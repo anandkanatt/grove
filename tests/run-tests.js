@@ -438,6 +438,67 @@ test('affirmations, comeback lines, badges, shop, avatars', () => {
   assert(D.ACCENTS.length >= 4, 'accents >=4');
 });
 
+// ---------- whisper: consent, payloads, privacy ----------
+const Whisper = require('../js/whisper.js');
+
+function whisperState() {
+  const st = S.defaultState(T('2026-07-02'));
+  st.goals.push(
+    { id: 'g1', name: 'Run 5K', domain: 'fitness', emoji: '🏃‍♀️',
+      steps: [{ id: 's1', text: 'run', done: true, doneAt: T('2026-07-01') },
+              { id: 's2', text: 'run more', done: false, doneAt: null }],
+      createdAt: 0, bloomedAt: null, reflection: null, private: false },
+    { id: 'g2', name: 'Secret', domain: 'career', emoji: '🌙',
+      steps: [{ id: 's3', text: 'shh', done: true, doneAt: T('2026-06-30') }],
+      createdAt: 0, bloomedAt: null, reflection: null, private: true }
+  );
+  st.journal.push(
+    { day: '2026-07-01', text: 'ran and felt great', goalId: 'g1' },
+    { day: '2026-06-30', text: 'quiet progress note', goalId: 'g2' }
+  );
+  st.streak.count = 3;
+  return st;
+}
+
+test('whisper consent lifecycle', () => {
+  const st = whisperState();
+  assertEq(Whisper.consentGranted(st), false);
+  Whisper.grantConsent(st, T('2026-07-02'));
+  assertEq(Whisper.consentGranted(st), true);
+  assertEq(st.aiConsent.notedAt, T('2026-07-02'));
+  Whisper.revokeConsent(st);
+  assertEq(Whisper.consentGranted(st), false);
+});
+test('whisper context and insights exclude private goals', () => {
+  const st = whisperState();
+  const ctx = Whisper.whisperContext(st);
+  assertEq(ctx.goals, ['Run 5K'], 'private goal titles never leave the device');
+  assertEq(ctx.streak, 3);
+  assertEq(ctx.blooms, 0);
+  const p = Whisper.insightsPayload(st);
+  assertEq(p.reflections.length, 1);
+  assert(p.reflections[0].text.includes('ran and felt great'), 'public reflection kept');
+  assert(!JSON.stringify(p).includes('Secret'), 'no private goal name anywhere in payload');
+  assert(!JSON.stringify(p).includes('quiet progress note'), 'no private journal text');
+  assertEq(p.stats.stepsByWeekday.length, 7);
+  assertEq(p.stats.stepsByWeekday.reduce((a, b) => a + b, 0), 2, 'aggregate counts stay');
+  assertEq(p.stats.streak, 3);
+});
+test('daily whisper is remembered per local day', () => {
+  const st = whisperState();
+  assertEq(Whisper.dailyWhisperDue(st, T('2026-07-02')), true);
+  Whisper.rememberWhisper(st, 'grow gently', T('2026-07-02'));
+  assertEq(Whisper.dailyWhisperDue(st, T('2026-07-02')), false);
+  assertEq(st.dailyWhisper, { day: '2026-07-02', text: 'grow gently' });
+  assertEq(Whisper.dailyWhisperDue(st, T('2026-07-03')), true);
+});
+test('voice helpers are safe no-ops outside the browser', () => {
+  assertEq(Whisper.speechAvailable(), false);
+  assertEq(Whisper.speakAvailable(), false);
+  assertEq(Whisper.makeDictation(() => {}), null);
+  assertEq(Whisper.speak('hello'), false, 'speak never throws');
+});
+
 // ---------- social: roster, spirit slots, builders ----------
 function socialState() {
   const st = S.defaultState(T('2026-07-02'));
