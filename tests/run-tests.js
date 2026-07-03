@@ -22,6 +22,7 @@ const L = require('../js/logic.js');
 const S = require('../js/state.js');
 const D = require('../js/data.js');
 const Sim = require('../js/sim.js');
+const Social = require('../js/social.js');
 
 // ---------- levels ----------
 test('xp 0 is level 1 Seedling', () => {
@@ -392,6 +393,64 @@ test('affirmations, comeback lines, badges, shop, avatars', () => {
   assertEq(kinds.size, D.SHOP_ITEMS.length, 'unique decor kinds');
   assert(D.PLAYER_AVATARS.length >= 6, 'avatars >=6');
   assert(D.ACCENTS.length >= 4, 'accents >=4');
+});
+
+// ---------- social: roster, spirit slots, builders ----------
+function socialState() {
+  const st = S.defaultState(T('2026-07-02'));
+  Sim.initMembers(st);
+  st.net.circle = { id: 'c1', name: 'Us', inviteCode: 'ABC234', memberId: 'me' };
+  st.net.members = [
+    { id: 'me', name: 'Anu', avatarId: '0', accentId: '0', joinedAt: '2026-07-01T00:00:00Z' },
+    { id: 'm2', name: 'Rhea', avatarId: '1', accentId: '1', joinedAt: '2026-07-02T00:00:00Z' },
+  ];
+  return st;
+}
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+test('roster puts real members first, spirits fill to five', () => {
+  const r = Social.roster(socialState(), D);
+  assertEq(r.length, 5);
+  assertEq(r[0].kind, 'real');
+  assertEq(r[0].member.id, 'm2', 'self excluded');
+  assertEq(r[1].kind, 'sim');
+  assertEq(r[1].member.id, 'maya', 'spirits in data order');
+  assertEq(r.filter(x => x.kind === 'sim').length, 4);
+});
+test('roster with no real circle is all spirits', () => {
+  const r = Social.roster(S.defaultState(T('2026-07-02')), D);
+  assertEq(r.map(x => x.member.id), D.MEMBERS.map(m => m.id));
+  assert(r.every(x => x.kind === 'sim'), 'all sim');
+});
+test('syncSpiritSlots trims the sim roster to the spirit seats', () => {
+  const st = socialState();
+  st.circle.members.find(m => m.id === 'maya').lastCheerIdx = 3;
+  st.circle.activeStruggle = { memberId: 'jen', since: 0, supported: false };
+  Social.syncSpiritSlots(st, D);
+  assertEq(st.circle.members.map(m => m.id), ['maya', 'priya', 'sofia', 'amara']);
+  assertEq(st.circle.members[0].lastCheerIdx, 3, 'existing spirit state kept');
+  assertEq(st.circle.activeStruggle, null, 'removed spirit’s struggle cleared');
+  const solo = S.defaultState(T('2026-07-02'));
+  Sim.initMembers(solo);
+  Social.syncSpiritSlots(solo, D);
+  assertEq(solo.circle.members.length, 5, 'solo keeps all five spirits');
+});
+test('event builders respect privacy and shape', () => {
+  const pub = Social.buildStepEvent({ name: 'Run 5K', private: false }, 2);
+  assertEq(pub.type, 'step');
+  assertEq(pub.payload, { goalTitle: 'Run 5K', stage: 2 });
+  assert(UUID_V4.test(pub.client_key), 'client_key is a v4 uuid');
+  assertEq(Social.buildStepEvent({ name: 'Secret', private: true }, 1).payload.goalTitle, null);
+  const bloom = Social.buildBloomEvent({ name: 'Run 5K', private: false });
+  assertEq(bloom.type, 'bloom');
+  assertEq(bloom.payload, { goalTitle: 'Run 5K' });
+  const strug = Social.buildStruggleEvent('  ' + 'x'.repeat(300));
+  assertEq(strug.payload.text.length, 280, 'struggle text capped');
+  assertEq(strug.payload.text[0], 'x', 'struggle text trimmed');
+  assertEq(Social.buildRecoverEvent(['m2']).payload, { supporterMemberIds: ['m2'] });
+  assertEq(Social.buildCheerEvent('m2', 'cp3').payload, { toMemberId: 'm2', phraseId: 'cp3' });
+  assertEq(Social.buildLeaveEvent('Anu').payload, { name: 'Anu' });
+  assert(Social.uuid() !== Social.uuid(), 'uuids differ');
 });
 
 // ---------- phase 2 content ----------
