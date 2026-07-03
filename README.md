@@ -37,7 +37,31 @@ no internet needed. Your garden lives entirely in your own browser
 - **Giving support is gameplay.** Sunshine sent is tracked as prominently as
   steps taken, and struggle→recovery arcs make encouragement matter.
 
-## Make it real (optional): circles with actual friends
+## One-click grove (App Deploy) — circles *and* the Whisperer, zero setup
+
+Grove's primary home is the **App Deploy** platform: one deploy gives hosting,
+real circles (its database + invite system, still anonymous — a name and a
+flower, no accounts), and **the Grove Whisperer** — AI woven into the game
+with no API key and nothing to configure:
+
+- **🪄 Goal coach** — drafts 6–10 tiny steps for any goal you name (you edit
+  everything before planting).
+- **Daily whisper** — a personalized affirmation for your garden each day.
+- **✨ Personal cheers & reply suggestions** — warm, specific lines you pick
+  and send as your own sunshine.
+- **Growth Rings insights** — on-demand reflections over your journal.
+- **Voice** — dictate boosts and reflections, hear your affirmation (free,
+  in-browser, works everywhere).
+
+The Whisperer is **opt-in** (a consent note explains exactly what's sent, and
+you can turn it off any time), only wakes in real circles, never sees 🌙
+private goals, and rests at 40 calls per circle per day.
+
+Deploying: `node tools/pack-appdeploy.js` assembles `appdeploy-dist/`, which
+ships via the App Deploy tooling (`backend/` holds the platform backend,
+`src/main.ts` bridges the platform client to the plain-script game).
+
+## Make it real (self-hosted alternative): circles on your own Supabase
 
 Out of the box your Circle is simulated. Phase 2 lets you share a **real,
 private circle** with up to four women you know — real steps, real cheers,
@@ -101,9 +125,13 @@ code-generated SVG.
 | `js/sim.js` | The garden spirits: catch-up activity, reactions, struggle arcs |
 | `js/state.js` | Versioned localStorage persistence (v2), migration, export/import |
 | `js/social.js` | Real circles: hybrid roster, event builders, remote classification |
+| `js/whisper.js` | Whisperer: consent, AI payload builders (privacy rules), voice |
 | `js/net.js` | SDK-free Supabase client: anonymous auth, RPCs, event push/pull |
+| `js/netad.js` | App Deploy adapter: same client surface over the platform bridge |
 | `js/sync.js` | Outbox flush + cursor pull loop, offline handling |
 | `js/garden.js` | SVG art: plants by stage, avatars, decor, community garden |
 | `js/ui.js` / `js/main.js` | Views, wizard, toasts, circle flows, boot |
 | `supabase/schema.sql` | Tables, row-level security, create/join RPCs |
 | `tools/fake-supabase.js` | In-memory double of the exact server contract |
+| `backend/` + `src/main.ts` | App Deploy backend (circles, events, Whisperer AI) and platform bridge |
+| `tools/pack-appdeploy.js` | Assembles the App Deploy deploy tree |
