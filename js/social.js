@@ -128,8 +128,10 @@ GroveSocial.applyRemote = function (state, data, events, selfMemberId) {
     }
 
     const m = memberOf(ev.member_id);
+    const ts = typeof ev.created_at === 'number'
+      ? ev.created_at : (Date.parse(ev.created_at) || 0);
     res.feedItems.push({
-      id: 'r' + ev.id, ts: Date.parse(ev.created_at) || 0, type, text,
+      id: 'r' + ev.id, ts, type, text,
       real: true, memberId: ev.member_id, name,
       avatarId: m ? m.avatarId : '0', cheered: false,
       goalTitle: (ev.type === 'step' || ev.type === 'bloom') ? (p.goalTitle || null) : undefined,

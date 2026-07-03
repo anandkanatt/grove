@@ -14,7 +14,9 @@ async function getMember(circleId: string, memberId: string, memberKey: string) 
   if (!circleId || !memberId || !memberKey) return null;
   const [m] = await db.get('members', [memberId]);
   if (!m || m.circleId !== circleId || m.memberKey !== memberKey) return null;
-  return m;
+  // db.get returns the stored record without its id (unlike db.list) — attach
+  // it, or every event written with member.id loses its author.
+  return { ...m, id: memberId };
 }
 
 async function listAll(table: string, filter: Record<string, unknown>) {

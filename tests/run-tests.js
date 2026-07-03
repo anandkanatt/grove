@@ -606,6 +606,12 @@ test('applyRemote surfaces cheers addressed to me', () => {
   ], 'me');
   assertEq(ai.cheersForMe[0].phrase, 'A custom warm line', 'payload text wins over phrase ids');
 });
+test('applyRemote accepts numeric createdAt timestamps (appdeploy wire)', () => {
+  const numericRow = row(90, 'm2', 'step', { goalTitle: 'Run 5K', stage: 1 });
+  numericRow.created_at = 1783089816823;   // ms number, not an ISO string
+  const res = Social.applyRemote(socialState(), D, [numericRow], 'me');
+  assertEq(res.feedItems[0].ts, 1783089816823, 'numeric timestamps pass through');
+});
 test('applyRemote keeps goal titles on step items for personal cheers', () => {
   const res = Social.applyRemote(socialState(), D, [
     row(80, 'm2', 'step', { goalTitle: 'Run 5K', stage: 1 }),
