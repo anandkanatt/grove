@@ -12,6 +12,7 @@ GroveSync.makeSync = function (opts) {
   const D = opts.data;
   const onUpdate = opts.onUpdate || function () {};
   const intervalMs = opts.intervalMs || 30000;
+  const nowFn = opts.now || (() => Date.now());
 
   let status = 'idle';
   let flushTimer = null;
@@ -56,8 +57,13 @@ GroveSync.makeSync = function (opts) {
 
     for (const item of report.feedItems) st.circle.feed.push(item);
     if (st.circle.feed.length > 80) st.circle.feed = st.circle.feed.slice(-80);
-    if (report.challengeSteps > 0) {
-      L.addChallengeProgress(st, report.challengeSteps, Date.now(), false);
+    // Only this week's steps water the challenge — a first pull after joining
+    // replays the circle's whole history and must not inflate the count.
+    const wk = L.weekKey(nowFn());
+    const weekSteps = report.feedItems
+      .filter(i => i.type === 'step' && L.weekKey(i.ts) === wk).length;
+    if (weekSteps > 0) {
+      L.addChallengeProgress(st, weekSteps, nowFn(), false);
     }
     if (st.net.playerStruggle) {
       for (const c of report.cheersForMe) {
@@ -75,7 +81,7 @@ GroveSync.makeSync = function (opts) {
     }
     if (pull.cursor > st.net.cursor) st.net.cursor = pull.cursor;
 
-    st.net.lastSyncAt = Date.now();
+    st.net.lastSyncAt = nowFn();
     status = 'synced';
     ctx.save();
 

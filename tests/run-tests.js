@@ -751,7 +751,7 @@ test('sync applies pulled events to feed, challenge, and struggle supporters', a
     ] }),
   });
   const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D,
-    onUpdate: (r) => updates.push(r) });
+    now: () => T('2026-07-02'), onUpdate: (r) => updates.push(r) });
   const before = st.circle.feed.length;
   await sync.syncNow();
   assertEq(st.circle.feed.length, before + 2);
@@ -761,6 +761,21 @@ test('sync applies pulled events to feed, challenge, and struggle supporters', a
   assertEq(updates.length, 1);
   assertEq(updates[0].challengeSteps, 1);
   assertEq(sync.status(), 'synced');
+  sync.stop();
+});
+test('history replayed on first pull does not inflate this week’s challenge', async () => {
+  const st = socialState();
+  L.rolloverChallengeIfNeeded(st, T('2026-07-02'));
+  const oldRow = row(5, 'm2', 'step', { goalTitle: 'Old', stage: 1 });
+  oldRow.created_at = '2026-06-10T10:00:00Z'; // weeks in the past
+  const client = makeFakeClient({
+    pullEvents: async () => ({ ok: true, cursor: 5, events: [oldRow] }),
+  });
+  const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D,
+    now: () => T('2026-07-02') });
+  await sync.syncNow();
+  assertEq(st.circle.challenge.progress, 0, 'old steps stay in the past');
+  assert(st.circle.feed.length > 0, 'but they do appear in the feed');
   sync.stop();
 });
 test('membership events refresh the cache and spirit slots', async () => {

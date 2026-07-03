@@ -672,6 +672,18 @@ const GroveUI = {};
     const levelAfter = L.levelForXp(st.xp);
     if (levelAfter.level > levelBefore) toast(`✨ Level up — you're a <strong>${esc(levelAfter.title)}</strong> now`, 'gold');
 
+    // Real circle: share the step (title-level only), and if a boost was out,
+    // this step is the comeback — credit everyone who cheered.
+    if (realCircle() && syncer()) {
+      syncer().queue(Social().buildStepEvent(goal, L.goalStage(goal)));
+      if (events.some(e => e.type === 'bloom')) syncer().queue(Social().buildBloomEvent(goal));
+      if (st.net.playerStruggle) {
+        syncer().queue(Social().buildRecoverEvent(st.net.playerStruggle.supporters));
+        st.net.playerStruggle = null;
+        toast('🌈 That step was your comeback — your circle saw it.', 'rose');
+      }
+    }
+
     announceBadges(L.evaluateBadges(st, Date.now()));
     ctx.save();
     renderAll();
