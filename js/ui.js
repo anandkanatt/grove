@@ -942,8 +942,10 @@ const GroveUI = {};
   }
 
   function handleWhisperSteps() {
+    // Collect BEFORE the consent modal replaces the wizard DOM, or the typed
+    // goal name is lost when the continuation finally runs.
+    collectWizardInputs();
     withConsent(async () => {
-      collectWizardInputs();
       if (!ob) return;
       if (!ob.goalName) { toast('Name your goal first 🌱'); return; }
       if (!ai()) { toast(esc(D.REAL_CIRCLE.aiQuiet)); return; }
