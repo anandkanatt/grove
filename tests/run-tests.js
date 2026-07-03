@@ -926,6 +926,133 @@ test('the shared feed stays capped at 80', async () => {
   sync.stop();
 });
 
+// ---------- netad: appdeploy adapter ----------
+const NetAd = require('../js/netad.js');
+
+function makeFakePlatform(script) {
+  const calls = [];
+  const run = (method, url, body) => {
+    calls.push({ method, url, body });
+    const next = script.shift();
+    if (!next) throw new Error('fake platform script exhausted');
+    if (next.reject) return Promise.reject(new Error('network down'));
+    if (next.status && next.status >= 400) {
+      const err = new Error('http ' + next.status);
+      err.statusCode = next.status;
+      return Promise.reject(err);
+    }
+    return Promise.resolve({ data: next.data === undefined ? {} : next.data });
+  };
+  return {
+    calls,
+    api: {
+      get: (u, b) => run('GET', u, b),
+      post: (u, b) => run('POST', u, b),
+      put: (u, b) => run('PUT', u, b),
+      delete: (u, b) => run('DELETE', u, b),
+    },
+    invitesClient: {
+      buildJoinUrl: (code) => 'https://app.example/?appdeploy_invite=' + code,
+      getPendingCode: () => null,
+      clearPendingCode: () => {},
+    },
+  };
+}
+function adClient(platform, opts) {
+  return NetAd.makeClient(Object.assign({
+    platform,
+    session: { platform: 'appdeploy', memberKey: 'mk-1' },
+    circleRef: () => ({ id: 'c1', memberId: 'm1' }),
+  }, opts || {}));
+}
+
+test('adapter creates a circle and stores the memberKey session', async () => {
+  const sessions = [];
+  const fp = makeFakePlatform([{ data: { circleId: 'c1', circleName: 'Us', inviteCode: 'AB12CD',
+    memberId: 'm1', memberKey: 'mk-9' } }]);
+  const c = NetAd.makeClient({ platform: fp, session: null,
+    circleRef: () => null, onSession: (s) => sessions.push(s) });
+  const r = await c.createCircle({ circleName: 'Us', memberName: 'Anu', avatarId: '0', accentId: '0' });
+  assertEq(r.ok, true);
+  assertEq(r.circle, { id: 'c1', name: 'Us', inviteCode: 'AB12CD' });
+  assertEq(r.memberId, 'm1');
+  assertEq(r.memberKey, 'mk-9');
+  assertEq(c.getSession(), { platform: 'appdeploy', memberKey: 'mk-9' });
+  assertEq(sessions.length, 1);
+  assertEq(fp.calls[0].method, 'POST');
+  assertEq(fp.calls[0].url, '/api/circles');
+  assertEq(fp.calls[0].body, { name: 'Us', member: { name: 'Anu', avatarId: '0', accentId: '0' } });
+});
+test('adapter joins by code and normalizes members', async () => {
+  const fp = makeFakePlatform([{ data: { circleId: 'c1', circleName: 'Us', inviteCode: 'AB12CD',
+    memberId: 'm2', memberKey: 'mk-2',
+    members: [{ id: 'm1', name: 'Anu', avatarId: '0', accentId: '0', joinedAt: 1000 }] } }]);
+  const c = adClient(fp, { session: null });
+  const r = await c.joinCircle({ code: 'ab12cd', memberName: 'Rhea', avatarId: '1', accentId: '1' });
+  assertEq(r.ok, true);
+  assertEq(fp.calls[0].url, '/api/circles/join');
+  assertEq(fp.calls[0].body.code, 'AB12CD', 'code uppercased');
+  assertEq(r.members[0].name, 'Anu');
+  assertEq(r.memberKey, 'mk-2');
+});
+test('adapter pushes events with clientKey rename and identity', async () => {
+  const fp = makeFakePlatform([{ data: { pushed: 1 } }]);
+  const c = adClient(fp);
+  const r = await c.pushEvents('c1', 'm1', [{ client_key: 'k1', type: 'step', payload: { stage: 1 } }]);
+  assertEq(r.ok, true);
+  assertEq(r.pushed, 1);
+  assertEq(fp.calls[0].url, '/api/circles/c1/events');
+  assertEq(fp.calls[0].body, { memberId: 'm1', memberKey: 'mk-1',
+    events: [{ clientKey: 'k1', type: 'step', payload: { stage: 1 } }] });
+});
+test('adapter pulls and normalizes to the phase-2 wire shape', async () => {
+  const fp = makeFakePlatform([{ data: { events: [
+    { id: 'e9', memberId: 'm2', clientKey: 'k9', type: 'step',
+      payload: { goalTitle: 'Run' }, createdAt: 2000 },
+  ] } }]);
+  const c = adClient(fp);
+  const r = await c.pullEvents('c1', 1000);
+  assertEq(r.ok, true);
+  assertEq(r.events, [{ id: 'e9', member_id: 'm2', type: 'step',
+    payload: { goalTitle: 'Run' }, created_at: 2000 }]);
+  assertEq(r.cursor, 2000);
+  assert(fp.calls[0].url.includes('since=1000'), 'cursor in query');
+  assert(fp.calls[0].url.includes('memberKey=mk-1'), 'identity in query');
+  const fp2 = makeFakePlatform([{ data: { events: [] } }]);
+  const r2 = await adClient(fp2).pullEvents('c1', 1000);
+  assertEq(r2.cursor, 1000, 'cursor unchanged on empty pull');
+});
+test('adapter builds invite links through the platform', () => {
+  const fp = makeFakePlatform([]);
+  const c = adClient(fp);
+  assertEq(c.kind, 'appdeploy');
+  assertEq(c.buildInviteLink('AB12CD'), 'https://app.example/?appdeploy_invite=AB12CD');
+});
+test('adapter ai surface maps caps and outages to warm errors', async () => {
+  const fp = makeFakePlatform([{ data: { steps: ['a', 'b', 'c', 'd', 'e', 'f'] } }]);
+  const c = adClient(fp);
+  const ok = await c.ai.steps({ goalName: 'Run 5K', domain: 'fitness' });
+  assertEq(ok.ok, true);
+  assertEq(ok.steps.length, 6);
+  assertEq(fp.calls[0].url, '/api/ai/steps');
+  assertEq(fp.calls[0].body, { memberId: 'm1', memberKey: 'mk-1', circleId: 'c1',
+    goalName: 'Run 5K', domain: 'fitness' });
+  const capped = await adClient(makeFakePlatform([{ status: 429 }]))
+    .ai.steps({ goalName: 'x', domain: 'fitness' });
+  assertEq(capped.ok, false);
+  assertEq(capped.error, 'ai-rest');
+  const down = await adClient(makeFakePlatform([{ reject: true }]))
+    .ai.cheer({ toName: 'Rhea', goalTitle: 'Run', kind: 'step' });
+  assertEq(down.ok, false);
+  assertEq(down.offline, true);
+});
+test('supabase client gained kind, null ai, and hash invite links', () => {
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon' });
+  assertEq(c.kind, 'supabase');
+  assertEq(c.ai, null);
+  assert(c.buildInviteLink('ABC234').endsWith('#join=ABC234'), 'mirror keeps #join links');
+});
+
 // ---------- net + fake supabase (integration over real HTTP) ----------
 const FakeSupabase = require('../tools/fake-supabase.js');
 

@@ -78,6 +78,16 @@ GroveNet.makeClient = function (cfg) {
   const camelCircle = (c) => ({ id: c.id, name: c.name, inviteCode: c.invite_code });
 
   return {
+    kind: 'supabase',
+    ai: null,   // AI surfaces live on the App Deploy backend only
+
+    buildInviteLink(code) {
+      if (typeof location !== 'undefined' && location.origin && location.origin !== 'null') {
+        return location.origin + location.pathname + '#join=' + code;
+      }
+      return '#join=' + code;
+    },
+
     getSession: () => session,
 
     async signInAnon() {
