@@ -274,7 +274,7 @@ function fakeStorage() {
 
 test('defaultState has the full schema', () => {
   const st = S.defaultState(T('2026-07-02'));
-  assertEq(st.version, 2);
+  assertEq(st.version, 3);
   for (const key of ['player', 'xp', 'petals', 'streak', 'goals', 'journal', 'badges',
     'decor', 'shopOwned', 'sunshineSent', 'challengesWon', 'circle', 'lastVisit', 'onboarded', 'net']) {
     assert(key in st, `missing key ${key}`);
@@ -314,10 +314,11 @@ test('export/import round-trips; garbage import throws', () => {
 });
 
 // ---------- state v2 (real circles) ----------
-test('defaultState carries the v2 net block', () => {
+test('defaultState carries the full net block', () => {
   const st = S.defaultState(T('2026-07-02'));
   assertEq(st.net, { session: null, circle: null, members: [], cursor: 0,
-    outbox: [], lastSyncAt: null, playerStruggle: null });
+    outbox: [], lastSyncAt: null, playerStruggle: null,
+    platform: null, memberKey: null });
 });
 test('a v1 save loads and migrates to v2', () => {
   const storage = fakeStorage();
@@ -329,7 +330,7 @@ test('a v1 save loads and migrates to v2', () => {
     createdAt: 0, bloomedAt: null, reflection: null });
   storage.setItem('grove-save-v1', JSON.stringify(v1));
   const back = S.load();
-  assertEq(back.version, 2);
+  assertEq(back.version, 3);
   assertEq(back.net.outbox, [], 'net block added');
   assertEq(back.net.cursor, 0);
   assertEq(back.goals[0].private, false, 'goals gain the private flag');
@@ -348,10 +349,41 @@ test('importJson migrates v1 exports and still rejects garbage', () => {
   v1.version = 1;
   delete v1.net;
   const back = S.importJson(JSON.stringify(v1));
-  assertEq(back.version, 2);
+  assertEq(back.version, 3);
   assert('net' in back, 'net added');
   assertEq(back.net.session, null);
   assertThrows(() => S.importJson('{}'), 'empty object rejected');
+});
+
+// ---------- state v3 (whisperer) ----------
+test('defaultState carries the v3 whisperer fields', () => {
+  const st = S.defaultState(T('2026-07-02'));
+  assertEq(st.net.platform, null);
+  assertEq(st.net.memberKey, null);
+  assertEq(st.aiConsent, { enabled: false, notedAt: null });
+  assertEq(st.dailyWhisper, { day: null, text: null });
+});
+test('a v2 save migrates to v3 preserving phase-2 data', () => {
+  const storage = fakeStorage();
+  S._setStorage(storage);
+  const v2 = S.defaultState(T('2026-07-01'));
+  v2.version = 2;
+  delete v2.aiConsent;
+  delete v2.dailyWhisper;
+  delete v2.net.platform;
+  delete v2.net.memberKey;
+  v2.goals.push({ id: 'g1', name: 'x', domain: 'career', emoji: 'x', steps: [],
+    createdAt: 0, bloomedAt: null, reflection: null, private: true });
+  v2.net.circle = { id: 'c1', name: 'Us', inviteCode: 'ABC234', memberId: 'me' };
+  storage.setItem('grove-save-v1', JSON.stringify(v2));
+  const back = S.load();
+  assertEq(back.version, 3);
+  assertEq(back.aiConsent, { enabled: false, notedAt: null });
+  assertEq(back.dailyWhisper, { day: null, text: null });
+  assertEq(back.net.platform, null);
+  assertEq(back.net.memberKey, null);
+  assertEq(back.goals[0].private, true, 'private flag survives');
+  assertEq(back.net.circle.inviteCode, 'ABC234', 'circle survives');
 });
 
 // ---------- content shape ----------
