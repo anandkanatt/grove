@@ -11,13 +11,18 @@ const GroveUI = {};
   let ob = null;           // onboarding / new-goal wizard scratch
   let goalSeq = 0;
   let pendingJoin = null;  // invite code parked until onboarding finishes
+  let pendingConsentAction = null;   // AI action awaiting the consent modal
+  let dictation = null;              // active speech-recognition session
+  let dailyWhisperTried = false;     // one fetch attempt per session
 
   const Social = () => window.GroveSocial;
+  const Whisper = () => window.GroveWhisper;
   const netConfigured = () => !!(window.GroveConfig
     && window.GroveConfig.SUPABASE_URL && window.GroveConfig.SUPABASE_ANON_KEY);
   const realCircle = () => (ctx.state.net && ctx.state.net.circle) || null;
   const flows = () => (window.Grove && window.Grove.net) || null;
   const syncer = () => (window.Grove && window.Grove.sync) || null;
+  const ai = () => (flows() && realCircle() ? flows().ai : null);
 
   function avatarPaletteFor(avatarId) {
     const a = D.PLAYER_AVATARS[Number(avatarId) % D.PLAYER_AVATARS.length] || D.PLAYER_AVATARS[0];
@@ -129,7 +134,11 @@ const GroveUI = {};
 
   // ---------- Today ----------
   function affirmationOfTheDay() {
+    const st = ctx.state;
     const key = L.dayKey(Date.now());
+    if (st.dailyWhisper && st.dailyWhisper.day === key && st.dailyWhisper.text) {
+      return st.dailyWhisper.text;   // today's personalized whisper
+    }
     let h = 0;
     for (const c of key) h = (h * 31 + c.charCodeAt(0)) >>> 0;
     return D.AFFIRMATIONS[h % D.AFFIRMATIONS.length];
@@ -182,8 +191,10 @@ const GroveUI = {};
       }).join('');
     }
 
+    maybeFetchDailyWhisper();
     view.innerHTML = `
-      <div class="affirmation">“${esc(affirmationOfTheDay())}”</div>
+      <div class="affirmation">“${esc(affirmationOfTheDay())}”${Whisper().speakAvailable()
+        ? ` <button class="voice-btn" data-action="voice-speak" title="Hear it" aria-label="Read the affirmation aloud">🔈</button>` : ''}</div>
       <div class="card">
         <div class="section-title">
           <h2>Hello${name} 🌤️</h2>
@@ -330,10 +341,15 @@ const GroveUI = {};
       const own = realCircle() && e.memberId === st.net.circle.memberId;
       const canCheer = !own && !e.cheered
         && e.type !== 'cheer_player' && e.type !== 'welcome' && e.type !== 'leave';
-      const btn = canCheer
+      let btn = canCheer
         ? `<button class="btn small ${e.type === 'struggle' ? 'accent' : 'secondary'}" data-action="cheer-real" data-member="${esc(e.memberId)}" data-event="${esc(e.id)}">
             ${e.type === 'struggle' ? 'Send encouragement 💛' : 'Send sunshine ☀️'}</button>`
         : (e.cheered ? `<button class="btn small cheered" disabled>Sunshine sent ✓</button>` : '');
+      if (canCheer && ai()) {
+        btn += e.type === 'struggle'
+          ? ` <button class="btn small secondary whisper-btn" data-action="whisper-replies" data-member="${esc(e.memberId)}" data-event="${esc(e.id)}">✨ suggest a reply</button>`
+          : ` <button class="btn small secondary whisper-btn" data-action="whisper-personal" data-member="${esc(e.memberId)}" data-event="${esc(e.id)}" data-name="${esc(e.name)}" title="Make it personal">✨</button>`;
+      }
       return `
       <div class="feed-item ${e.type}">
         <div class="fava">${G.avatarSvg(avatarPaletteFor(e.avatarId))}</div>
@@ -479,6 +495,7 @@ const GroveUI = {};
       </div>
       <div class="card">
         <div class="section-title"><h2>Growth Rings 📖</h2><span class="sub">your reflections</span></div>
+        ${ai() ? `<div style="margin:8px 0"><button class="btn secondary small whisper-btn" data-action="whisper-insights">✨ what do my rings say?</button></div><div id="whisper-insights-out"></div>` : ''}
         ${journal || '<div class="empty-note">When a goal blooms, your reflection is kept here.</div>'}
       </div>
       <div class="card">
@@ -495,6 +512,12 @@ const GroveUI = {};
         <div class="settings-row" style="margin-top:10px">
           <span class="invite-chip">Circle: <b>${esc(realCircle().name)}</b></span>
           <button class="btn small" style="background:var(--danger)" data-action="rc-leave">Leave circle</button>
+        </div>` : ''}
+        ${ai() ? `
+        <div class="settings-row">
+          <span class="sub">Whisperer (AI): <b>${Whisper().consentGranted(st) ? 'listening ✨' : 'off'}</b></span>
+          ${Whisper().consentGranted(st)
+            ? `<button class="btn small secondary" data-action="whisper-consent-revoke">Turn off</button>` : ''}
         </div>` : ''}
       </div>`;
   }
@@ -568,6 +591,7 @@ const GroveUI = {};
         <div class="sub" style="font-weight:600;margin-bottom:4px">Tiny steps (${ob.steps.length})</div>
         <div class="steps-editor">${stepRows}</div>
         <button class="btn secondary small" data-action="ob-add-step">+ add a step</button>
+        ${ai() ? `<button class="btn secondary small whisper-btn" data-action="whisper-steps">🪄 draft my tiny steps</button>` : ''}
         ${netConfigured() ? `<label class="privacy-row">
           <input type="checkbox" id="ob-private" ${ob.private ? 'checked' : ''}>
           🌙 keep this goal private to me</label>` : ''}
@@ -711,6 +735,7 @@ const GroveUI = {};
         <p class="sub" style="margin-top:10px;font-weight:600">One line for your Growth Rings: what did this teach you?</p>
         <input class="text-input" id="reflection-input" maxlength="140"
           placeholder="e.g. Starting badly beats not starting" style="margin:8px 0 4px">
+        ${Whisper().speechAvailable() ? `<button class="btn small secondary mic-btn" data-action="voice-dictate" data-target="reflection-input">🎙️ dictate</button>` : ''}
         <div class="modal-actions" style="justify-content:center">
           <button class="btn secondary" data-action="skip-reflection" data-goal="${goal.id}">Skip</button>
           <button class="btn accent" data-action="save-reflection" data-goal="${goal.id}">Keep it 📖</button>
@@ -782,6 +807,7 @@ const GroveUI = {};
       <p class="sub">${esc(D.REAL_CIRCLE.boostHint)}</p>
       <textarea class="text-input boost-composer" id="boost-text" maxlength="280"
         placeholder="${esc(D.REAL_CIRCLE.boostPlaceholder)}"></textarea>
+      ${Whisper().speechAvailable() ? `<button class="btn small secondary mic-btn" data-action="voice-dictate" data-target="boost-text">🎙️ dictate</button>` : ''}
       <div class="modal-actions">
         <button class="btn secondary" data-action="close-modal">Not now</button>
         <button class="btn accent" data-action="rc-boost-send">Send to my circle</button>
@@ -880,6 +906,161 @@ const GroveUI = {};
     renderAll();
   }
 
+  // ---------- the whisperer (AI, consent-gated) ----------
+  function withConsent(fn) {
+    if (Whisper().consentGranted(ctx.state)) { fn(); return; }
+    pendingConsentAction = fn;
+    showModal(`
+      <h2>The Grove Whisperer ✨</h2>
+      <p class="sub">A little AI lives in real groves. When you tap a whisperer button,
+        only the words involved — a goal name you're drafting steps for, or the journal
+        lines you ask it to read — are sent to the platform's AI to write something back.
+        Nothing is ever sent until you tap.</p>
+      <p class="sub consent-note">🌙 Private goals are never included. You can turn the
+        whisperer off any time in More → your data.</p>
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Not now</button>
+        <button class="btn accent" data-action="whisper-consent-accept">Let it whisper ✨</button>
+      </div>`);
+  }
+
+  function handleConsentAccept() {
+    Whisper().grantConsent(ctx.state, Date.now());
+    ctx.save();
+    closeModal();
+    const fn = pendingConsentAction;
+    pendingConsentAction = null;
+    if (fn) fn();
+  }
+
+  function handleConsentRevoke() {
+    Whisper().revokeConsent(ctx.state);
+    ctx.save();
+    toast('The whisperer sleeps. Your grove is yours alone 🌙');
+    renderAll();
+  }
+
+  function handleWhisperSteps() {
+    withConsent(async () => {
+      collectWizardInputs();
+      if (!ob) return;
+      if (!ob.goalName) { toast('Name your goal first 🌱'); return; }
+      if (!ai()) { toast(esc(D.REAL_CIRCLE.aiQuiet)); return; }
+      toast('🪄 The whisperer is thinking…');
+      const r = await ai().steps({ goalName: ob.goalName, domain: ob.domain });
+      if (!ob) return;   // wizard closed while we waited
+      if (r.ok && Array.isArray(r.steps) && r.steps.length >= 2) {
+        ob.steps = r.steps.slice(0, 10).map(s => String(s));
+        renderWizard();
+        toast('Steps drafted — edit anything ✨', 'rose');
+      } else {
+        toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+      }
+    });
+  }
+
+  function sendCheerWithText(memberId, eventId, text) {
+    const st = ctx.state;
+    if (!realCircle() || !syncer()) return;
+    if (eventId) {
+      const item = st.circle.feed.find(e => e.id === eventId);
+      if (item) item.cheered = true;
+    }
+    L.cheer(st, Date.now());
+    syncer().queue(Social().buildCheerEvent(memberId, 'ai', text));
+    closeModal();
+    toast(`☀️ Sent: “${esc(text)}”`);
+    announceBadges(L.evaluateBadges(st, Date.now()));
+    ctx.save();
+    renderAll();
+  }
+
+  function handleWhisperReplies(memberId, eventId) {
+    withConsent(async () => {
+      const item = ctx.state.circle.feed.find(e => e.id === eventId);
+      if (!item || !ai()) return;
+      toast('✨ Listening for the right words…');
+      const r = await ai().boostReplies({ struggleText: item.text });
+      if (r.ok && Array.isArray(r.replies) && r.replies.length) {
+        showModal(`
+          <h2>Reply with warmth 💛</h2>
+          <p class="sub">Pick one — it sends as your sunshine, in your name.</p>
+          ${r.replies.slice(0, 3).map(t => `
+            <button class="reply-chip" data-action="whisper-reply-send"
+              data-member="${esc(memberId)}" data-event="${esc(eventId)}"
+              data-text="${esc(t)}">${esc(t)}</button>`).join('')}
+          <div class="modal-actions">
+            <button class="btn secondary" data-action="close-modal">I'll write my own</button>
+          </div>`);
+      } else {
+        toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+      }
+    });
+  }
+
+  function handleWhisperPersonal(memberId, eventId, name) {
+    withConsent(async () => {
+      const item = ctx.state.circle.feed.find(e => e.id === eventId);
+      if (!ai()) return;
+      toast('✨ Finding the right words…');
+      const r = await ai().cheer({
+        toName: name, goalTitle: item ? (item.goalTitle || null) : null, kind: 'step',
+      });
+      if (r.ok && r.line) sendCheerWithText(memberId, eventId, String(r.line));
+      else toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+    });
+  }
+
+  function handleWhisperInsights() {
+    withConsent(async () => {
+      if (!ai()) return;
+      const out = $('#whisper-insights-out');
+      if (out) out.innerHTML = '<div class="whisper-card">✨ reading your rings…</div>';
+      const r = await ai().insights(Whisper().insightsPayload(ctx.state));
+      if (r.ok && r.text) {
+        if (out) out.innerHTML = `<div class="whisper-card">✨ ${esc(r.text)}</div>`;
+      } else {
+        if (out) out.innerHTML = '';
+        toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+      }
+    });
+  }
+
+  function maybeFetchDailyWhisper() {
+    const st = ctx.state;
+    if (dailyWhisperTried || !ai() || !Whisper().consentGranted(st)) return;
+    if (!Whisper().dailyWhisperDue(st, Date.now())) return;
+    dailyWhisperTried = true;
+    ai().cheer(Object.assign({ kind: 'daily' }, Whisper().whisperContext(st))).then(r => {
+      if (r.ok && r.line) {
+        Whisper().rememberWhisper(st, String(r.line), Date.now());
+        ctx.save();
+        if (currentView === 'today') renderView('today');
+      }
+    });
+  }
+
+  function handleDictate(targetId, btn) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    if (dictation) {
+      dictation.stop();
+      dictation = null;
+      btn.classList.remove('listening');
+      return;
+    }
+    dictation = Whisper().makeDictation((text) => {
+      el.value = (el.value ? el.value + ' ' : '') + text;
+      dictation = null;
+      btn.classList.remove('listening');
+      el.focus();
+    });
+    if (dictation) {
+      btn.classList.add('listening');
+      dictation.start();
+    }
+  }
+
   function handleBuy(itemId) {
     const st = ctx.state;
     const item = D.SHOP_ITEMS.find(i => i.id === itemId);
@@ -959,6 +1140,15 @@ const GroveUI = {};
     else if (a === 'rc-leave') handleLeaveCircle();
     else if (a === 'cheer-real') handleCheerReal(btn.dataset.member, btn.dataset.event);
     else if (a === 'toggle-private') handleTogglePrivate(btn.dataset.goal);
+    else if (a === 'whisper-consent-accept') handleConsentAccept();
+    else if (a === 'whisper-consent-revoke') handleConsentRevoke();
+    else if (a === 'whisper-steps') handleWhisperSteps();
+    else if (a === 'whisper-replies') handleWhisperReplies(btn.dataset.member, btn.dataset.event);
+    else if (a === 'whisper-reply-send') sendCheerWithText(btn.dataset.member, btn.dataset.event, btn.dataset.text);
+    else if (a === 'whisper-personal') handleWhisperPersonal(btn.dataset.member, btn.dataset.event, btn.dataset.name);
+    else if (a === 'whisper-insights') handleWhisperInsights();
+    else if (a === 'voice-speak') Whisper().speak(affirmationOfTheDay());
+    else if (a === 'voice-dictate') handleDictate(btn.dataset.target, btn);
     else if (a === 'close-modal') { ob = null; closeModal(); }
     else if (a === 'export') handleExport();
     else if (a === 'import-trigger') $('#import-file').click();

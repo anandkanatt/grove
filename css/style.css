@@ -372,6 +372,32 @@ textarea.boost-composer { min-height: 96px; resize: vertical; margin: 10px 0 4px
 }
 .privacy-row input { accent-color: var(--accent); width: 16px; height: 16px; }
 
+/* ---------- the whisperer ---------- */
+.whisper-btn { border-color: var(--gold) !important; }
+.whisper-card {
+  background: #fdf8ec; border-left: 3px solid var(--gold);
+  border-radius: 10px; padding: 12px 14px; margin: 8px 0;
+  font-size: 0.92rem; line-height: 1.5;
+}
+.reply-chip {
+  display: block; width: 100%; text-align: left;
+  background: var(--soft); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; margin: 8px 0; font: inherit; font-size: 0.9rem;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.reply-chip:hover, .reply-chip:focus-visible { border-color: var(--gold); }
+.consent-note { font-weight: 600; }
+.voice-btn {
+  background: none; border: none; cursor: pointer; font-size: 0.95rem;
+  opacity: 0.6; vertical-align: middle;
+}
+.voice-btn:hover, .voice-btn:focus-visible { opacity: 1; }
+.mic-btn.listening {
+  background: var(--accent); color: #fff;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-pulse { 50% { opacity: 0.7; } }
+
 @media (max-width: 480px) {
   .wordmark { font-size: 1.25rem; }
   .chip { font-size: 0.76rem; padding: 3px 9px; }

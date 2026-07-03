@@ -148,6 +148,7 @@
     buildInviteLink(code) {
       return client ? client.buildInviteLink(code) : ('#join=' + code);
     },
+    get ai() { return client ? client.ai : null; },
     async leaveCircleFlow() {
       if (!client || !state.net.circle) return { ok: false, error: 'offline' };
       const rc = state.net.circle;

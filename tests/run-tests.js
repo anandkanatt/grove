@@ -553,6 +553,8 @@ test('event builders respect privacy and shape', () => {
   assertEq(strug.payload.text[0], 'x', 'struggle text trimmed');
   assertEq(Social.buildRecoverEvent(['m2']).payload, { supporterMemberIds: ['m2'] });
   assertEq(Social.buildCheerEvent('m2', 'cp3').payload, { toMemberId: 'm2', phraseId: 'cp3' });
+  assertEq(Social.buildCheerEvent('m2', 'ai', 'You got this, friend').payload,
+    { toMemberId: 'm2', phraseId: 'ai', text: 'You got this, friend' }, 'AI cheers carry text');
   assertEq(Social.buildLeaveEvent('Anu').payload, { name: 'Anu' });
   assert(Social.uuid() !== Social.uuid(), 'uuids differ');
 });
@@ -599,6 +601,18 @@ test('applyRemote surfaces cheers addressed to me', () => {
   assertEq(res.cheersForMe[0].phrase, D.CHEER_PHRASES[0].text);
   assertEq(res.feedItems[0].type, 'cheer_player');
   assert(res.feedItems[0].text.includes('you'), 'addressed to you');
+  const ai = Social.applyRemote(socialState(), D, [
+    row(51, 'm2', 'cheer', { toMemberId: 'me', phraseId: 'ai', text: 'A custom warm line' }),
+  ], 'me');
+  assertEq(ai.cheersForMe[0].phrase, 'A custom warm line', 'payload text wins over phrase ids');
+});
+test('applyRemote keeps goal titles on step items for personal cheers', () => {
+  const res = Social.applyRemote(socialState(), D, [
+    row(80, 'm2', 'step', { goalTitle: 'Run 5K', stage: 1 }),
+    row(81, 'm2', 'step', { goalTitle: null, stage: 1 }),
+  ], 'me');
+  assertEq(res.feedItems[0].goalTitle, 'Run 5K');
+  assertEq(res.feedItems[1].goalTitle, null, 'quiet goals stay quiet');
 });
 test('applyRemote credits recoveries I helped with', () => {
   const res = Social.applyRemote(socialState(), D, [
@@ -637,7 +651,7 @@ test('real-circle copy block is complete', () => {
   const rc = D.REAL_CIRCLE;
   assert(rc && typeof rc === 'object', 'REAL_CIRCLE exists');
   for (const key of ['spiritTag', 'spiritHint', 'makeRealTitle', 'makeRealBody',
-    'setupBody', 'boostPlaceholder', 'boostHint', 'quietGoalLabel']) {
+    'setupBody', 'boostPlaceholder', 'boostHint', 'quietGoalLabel', 'aiRest', 'aiQuiet']) {
     assert(typeof rc[key] === 'string' && rc[key].length > 0, `missing copy: ${key}`);
   }
   for (const key of ['not-found', 'full', 'offline']) {

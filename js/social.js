@@ -61,8 +61,10 @@ GroveSocial.buildStruggleEvent = function (text) {
 GroveSocial.buildRecoverEvent = function (supporterIds) {
   return makeEvent('recover', { supporterMemberIds: supporterIds.slice() });
 };
-GroveSocial.buildCheerEvent = function (toMemberId, phraseId) {
-  return makeEvent('cheer', { toMemberId, phraseId });
+GroveSocial.buildCheerEvent = function (toMemberId, phraseId, text) {
+  const payload = { toMemberId, phraseId };
+  if (text) payload.text = text;   // whisperer cheers carry their own line
+  return makeEvent('cheer', payload);
 };
 GroveSocial.buildLeaveEvent = function (name) {
   return makeEvent('leave', { name });
@@ -109,7 +111,7 @@ GroveSocial.applyRemote = function (state, data, events, selfMemberId) {
       if (helped) res.recoveredWithMyHelp.push(name);
     } else if (ev.type === 'cheer') {
       type = 'cheer_player';
-      const phrase = phraseOf(p.phraseId);
+      const phrase = p.text || phraseOf(p.phraseId);
       const toMe = p.toMemberId === selfMemberId;
       text = `${name} sent ${toMe ? 'you' : nameOf(p.toMemberId)} sunshine ☀️ — “${phrase}”`;
       if (toMe) res.cheersForMe.push({ fromMemberId: ev.member_id, name, phrase });
@@ -130,6 +132,7 @@ GroveSocial.applyRemote = function (state, data, events, selfMemberId) {
       id: 'r' + ev.id, ts: Date.parse(ev.created_at) || 0, type, text,
       real: true, memberId: ev.member_id, name,
       avatarId: m ? m.avatarId : '0', cheered: false,
+      goalTitle: (ev.type === 'step' || ev.type === 'bloom') ? (p.goalTitle || null) : undefined,
     });
   }
   return res;

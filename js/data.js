@@ -471,6 +471,8 @@ GroveData.REAL_CIRCLE = {
   boostPlaceholder: 'What’s feeling heavy this week?',
   boostHint: 'Only your circle sees this. Asking is a strength.',
   quietGoalLabel: 'a quiet goal 🌙',
+  aiRest: 'The whisperer is resting — try again tomorrow 🌙',
+  aiQuiet: 'The whisperer is quiet right now — your own words work too.',
   joinErrors: {
     'not-found': 'That code doesn’t match any circle — double-check it with your friend.',
     'full': 'That circle is full (five friends max) — maybe start a new one together?',
