@@ -261,6 +261,16 @@ async function aiAllowed(circleId, memberId, isCoach) { /* aiUsage day row: read
 - [ ] **Step 2:** Regression: GitHub Pages mirror still boots v1-identical (blank config, no bridge); `node tests/run-tests.js` green; `git diff` for strays.
 - [ ] **Step 3:** Final commit `docs: phase 3 notes`; report live URL + summary.
 
+## Execution notes (2026-07-03)
+
+- Deployed App Deploy app id: `grove-hpbc3e` — live at https://grove-hpbc3e.v2.appdeploy.ai/
+- Live verification found and fixed four bugs: circle UI gated on Supabase
+  config only; `db.get` returns records without ids (event authorship lost);
+  numeric `createdAt` broke feed timestamps and the challenge week filter;
+  wizard inputs collected after the consent modal replaced the DOM.
+- Platform e2e: 7/8 jobs passing at final deploy; coach verified against real
+  `ai.generate` (8 excellent steps for “Switch careers into UX design”).
+
 ## Self-review (done)
 
 - **Spec coverage:** §4.1 features → T5 (+T2 payloads, T3 ai surface); §4.2 consent/privacy → T2 (privacy tests) + T5 (gating) + backend-by-construction note in T6; §4.3 caps → T6 (`aiAllowed`) + e2e test 7; §5.1 platform app → T4/T6/T8; §5.2 routes/tables → T6; §5.3 adapter/seam → T3/T4; §5.4 state v3 → T1; §5.5 errors → T3 (offline/429 mapping), T5 (fallbacks), T6 (401/429/502); §6 testing → per-task + tests.txt (T6) + live smoke (T9); §7 ship list fully mapped; §8 criteria = T9.
