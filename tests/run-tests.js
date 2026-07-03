@@ -677,6 +677,142 @@ test('network failures and timeouts resolve offline, never throw', async () => {
   assertEq(r2.offline, true);
 });
 
+// ---------- sync orchestration ----------
+const Sync = require('../js/sync.js');
+
+function makeFakeClient(overrides) {
+  const calls = [];
+  const base = {
+    calls,
+    pushEvents: async (cid, mid, evs) => {
+      calls.push(['push', cid, mid, evs.map(e => e.client_key)]);
+      return { ok: true, pushed: evs.length };
+    },
+    pullEvents: async (cid, cursor) => {
+      calls.push(['pull', cid, cursor]);
+      return { ok: true, events: [], cursor };
+    },
+    fetchMembers: async (cid) => {
+      calls.push(['members', cid]);
+      return { ok: true, members: [] };
+    },
+  };
+  return Object.assign(base, overrides || {});
+}
+function syncCtx(st) {
+  let saves = 0;
+  return { get state() { return st; }, save() { saves++; }, saveCount: () => saves };
+}
+
+test('sync queues to the outbox and flushes on demand', async () => {
+  const st = socialState();
+  const ctx = syncCtx(st);
+  const client = makeFakeClient();
+  const sync = Sync.makeSync({ ctx, client, logic: L, social: Social, data: D });
+  sync.queue(Social.buildStepEvent({ name: 'Run', private: false }, 1));
+  sync.queue(Social.buildCheerEvent('m2', 'cp1'));
+  assertEq(st.net.outbox.length, 2);
+  assert(ctx.saveCount() >= 2, 'saved on queue');
+  await sync.syncNow();
+  assertEq(st.net.outbox.length, 0, 'outbox flushed');
+  const push = client.calls.find(c => c[0] === 'push');
+  assertEq(push[3].length, 2, 'both events pushed');
+  assertEq(push[1], 'c1');
+  assertEq(push[2], 'me');
+  sync.stop();
+});
+test('events queued mid-flush survive to the next flush', async () => {
+  const st = socialState();
+  let midFlight = null;
+  const client = makeFakeClient({
+    pushEvents: async () => {
+      st.net.outbox.push(midFlight); // lands while the request is in the air
+      return { ok: true, pushed: 2 };
+    },
+  });
+  const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D });
+  sync.queue(Social.buildStepEvent({ name: 'A', private: false }, 1));
+  sync.queue(Social.buildStepEvent({ name: 'B', private: false }, 1));
+  midFlight = Social.buildStepEvent({ name: 'C', private: false }, 1);
+  await sync.syncNow();
+  assertEq(st.net.outbox.length, 1, 'only the mid-flight event remains');
+  assertEq(st.net.outbox[0].client_key, midFlight.client_key);
+  sync.stop();
+});
+test('sync applies pulled events to feed, challenge, and struggle supporters', async () => {
+  const st = socialState();
+  L.rolloverChallengeIfNeeded(st, T('2026-07-02'));
+  st.net.playerStruggle = { eventKey: 'k', postedAt: 1, supporters: [] };
+  const updates = [];
+  const client = makeFakeClient({
+    pullEvents: async () => ({ ok: true, cursor: 42, events: [
+      row(41, 'm2', 'step', { goalTitle: 'Run 5K', stage: 1 }),
+      row(42, 'm2', 'cheer', { toMemberId: 'me', phraseId: 'cp2' }),
+    ] }),
+  });
+  const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D,
+    onUpdate: (r) => updates.push(r) });
+  const before = st.circle.feed.length;
+  await sync.syncNow();
+  assertEq(st.circle.feed.length, before + 2);
+  assertEq(st.circle.challenge.progress, 1, 'foreign step waters the challenge');
+  assertEq(st.net.playerStruggle.supporters, ['m2']);
+  assertEq(st.net.cursor, 42);
+  assertEq(updates.length, 1);
+  assertEq(updates[0].challengeSteps, 1);
+  assertEq(sync.status(), 'synced');
+  sync.stop();
+});
+test('membership events refresh the cache and spirit slots', async () => {
+  const st = socialState();
+  const grown = [
+    { id: 'me', name: 'Anu', avatarId: '0', accentId: '0', joinedAt: '2026-07-01T00:00:00Z' },
+    { id: 'm2', name: 'Rhea', avatarId: '1', accentId: '1', joinedAt: '2026-07-02T00:00:00Z' },
+    { id: 'm3', name: 'Tara', avatarId: '2', accentId: '2', joinedAt: '2026-07-03T00:00:00Z' },
+  ];
+  const client = makeFakeClient({
+    pullEvents: async () => ({ ok: true, cursor: 50,
+      events: [row(50, 'm3', 'join', { name: 'Tara' })] }),
+    fetchMembers: async () => ({ ok: true, members: grown }),
+  });
+  const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D });
+  await sync.syncNow();
+  assertEq(st.net.members.length, 3);
+  assertEq(st.circle.members.map(m => m.id), ['maya', 'priya', 'sofia'],
+    'spirits trimmed to the free seats');
+  sync.stop();
+});
+test('an offline client keeps the outbox and reports status', async () => {
+  const st = socialState();
+  const client = makeFakeClient({
+    pushEvents: async () => ({ ok: false, error: 'offline', offline: true }),
+  });
+  const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D });
+  sync.queue(Social.buildStepEvent({ name: 'A', private: false }, 1));
+  const r = await sync.syncNow();
+  assertEq(r.ok, false);
+  assertEq(st.net.outbox.length, 1, 'outbox intact for the next cycle');
+  assertEq(sync.status(), 'offline');
+  sync.stop();
+});
+test('the shared feed stays capped at 80', async () => {
+  const st = socialState();
+  for (let i = 0; i < 79; i++) {
+    st.circle.feed.push({ id: 'e' + i, ts: i, type: 'step', text: 'x', cheered: false, memberId: 'maya' });
+  }
+  const client = makeFakeClient({
+    pullEvents: async () => ({ ok: true, cursor: 3, events: [
+      row(1, 'm2', 'step', { goalTitle: 'a', stage: 1 }),
+      row(2, 'm2', 'step', { goalTitle: 'b', stage: 1 }),
+      row(3, 'm2', 'step', { goalTitle: 'c', stage: 1 }),
+    ] }),
+  });
+  const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D });
+  await sync.syncNow();
+  assertEq(st.circle.feed.length, 80);
+  sync.stop();
+});
+
 // ---------- net + fake supabase (integration over real HTTP) ----------
 const FakeSupabase = require('../tools/fake-supabase.js');
 
@@ -842,17 +978,22 @@ test('supporting a struggling member sparks a recovery crediting the player', ()
 
 // ---------- summary ----------
 (async () => {
-  // Ref'd watchdog: a hung async test must fail loudly, not drain the event
-  // loop into a silent exit-0.
+  // Pessimistic until the summary runs: if a hung test drains the event loop
+  // mid-suite, the process still exits non-zero instead of silently passing.
+  process.exitCode = 1;
+  // Watchdog: a hung async test must fail loudly, not drain the event loop
+  // into a silent exit-0. unref'd so a clean run exits naturally (forcing
+  // process.exit() races libuv handle teardown on Windows).
   const watchdog = setTimeout(() => {
     console.log('TIMEOUT: test suite hung — a test never settled');
     process.exit(1);
   }, 120000);
+  watchdog.unref();
   for (const t of queue) {
     try { await t.fn(); passed++; }
     catch (e) { failed++; failures.push({ name: t.name, message: e.message }); }
   }
   console.log(`\n${passed} passed, ${failed} failed`);
   for (const f of failures) console.log(`  FAIL ${f.name}: ${f.message}`);
-  process.exit(failed ? 1 : 0);
+  process.exitCode = failed ? 1 : 0;
 })();
