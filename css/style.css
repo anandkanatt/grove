@@ -339,11 +339,72 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.
 .section-title h2 { font-size: 1.2rem; }
 .settings-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 8px 0; }
 
+/* ---------- real circles ---------- */
+.member-card, .plant-card { position: relative; }
+.ribbon-real {
+  position: absolute; top: 8px; right: 8px;
+  background: var(--accent); color: #fff;
+  font-size: 0.6rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+}
+.spirit-tag {
+  display: inline-block; font-size: 0.66rem; color: var(--muted);
+  background: var(--soft); border-radius: 999px; padding: 2px 8px; margin: 2px 0 4px;
+}
+.sync-chip {
+  font-size: 0.72rem; font-weight: 600; color: var(--leaf-dark);
+  background: var(--soft); border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+}
+.sync-chip.offline { background: #f3e3c8; color: #8a5a1f; }
+.invite-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.invite-chip { font-size: 0.8rem; background: var(--soft); border-radius: 999px; padding: 6px 12px; }
+.invite-chip b { letter-spacing: 0.15em; }
+textarea.boost-composer { min-height: 96px; resize: vertical; margin: 10px 0 4px; font: inherit; width: 100%; }
+.moon-toggle {
+  position: absolute; top: 6px; right: 6px; z-index: 1;
+  background: none; border: none; font-size: 1rem; cursor: pointer;
+  opacity: 0.5; transition: opacity 0.2s, transform 0.2s;
+}
+.moon-toggle.on, .moon-toggle:hover, .moon-toggle:focus-visible { opacity: 1; transform: scale(1.1); }
+.privacy-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px;
+  font-size: 0.85rem; color: var(--muted); cursor: pointer;
+}
+.privacy-row input { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* ---------- the whisperer ---------- */
+.whisper-btn { border-color: var(--gold) !important; }
+.whisper-card {
+  background: #fdf8ec; border-left: 3px solid var(--gold);
+  border-radius: 10px; padding: 12px 14px; margin: 8px 0;
+  font-size: 0.92rem; line-height: 1.5;
+}
+.reply-chip {
+  display: block; width: 100%; text-align: left;
+  background: var(--soft); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; margin: 8px 0; font: inherit; font-size: 0.9rem;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.reply-chip:hover, .reply-chip:focus-visible { border-color: var(--gold); }
+.consent-note { font-weight: 600; }
+.voice-btn {
+  background: none; border: none; cursor: pointer; font-size: 0.95rem;
+  opacity: 0.6; vertical-align: middle;
+}
+.voice-btn:hover, .voice-btn:focus-visible { opacity: 1; }
+.mic-btn.listening {
+  background: var(--accent); color: #fff;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-pulse { 50% { opacity: 0.7; } }
+
 @media (max-width: 480px) {
   .wordmark { font-size: 1.25rem; }
   .chip { font-size: 0.76rem; padding: 3px 9px; }
   #app { padding: 10px 10px 80px; }
   .card { padding: 14px; }
+  .invite-row { flex-direction: column; align-items: stretch; }
+  .invite-row .btn { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -10,6 +10,25 @@ const GroveUI = {};
   let currentView = 'today';
   let ob = null;           // onboarding / new-goal wizard scratch
   let goalSeq = 0;
+  let pendingJoin = null;  // invite code parked until onboarding finishes
+  let pendingConsentAction = null;   // AI action awaiting the consent modal
+  let dictation = null;              // active speech-recognition session
+  let dailyWhisperTried = false;     // one fetch attempt per session
+
+  const Social = () => window.GroveSocial;
+  const Whisper = () => window.GroveWhisper;
+  // Any real-circle backend: the App Deploy bridge, or self-hosted Supabase config.
+  const netConfigured = () => !!window.GrovePlatform || !!(window.GroveConfig
+    && window.GroveConfig.SUPABASE_URL && window.GroveConfig.SUPABASE_ANON_KEY);
+  const realCircle = () => (ctx.state.net && ctx.state.net.circle) || null;
+  const flows = () => (window.Grove && window.Grove.net) || null;
+  const syncer = () => (window.Grove && window.Grove.sync) || null;
+  const ai = () => (flows() && realCircle() ? flows().ai : null);
+
+  function avatarPaletteFor(avatarId) {
+    const a = D.PLAYER_AVATARS[Number(avatarId) % D.PLAYER_AVATARS.length] || D.PLAYER_AVATARS[0];
+    return { petal: a.petal, center: a.center };
+  }
 
   const $ = (sel) => document.querySelector(sel);
   const esc = (s) => String(s == null ? '' : s)
@@ -116,7 +135,11 @@ const GroveUI = {};
 
   // ---------- Today ----------
   function affirmationOfTheDay() {
+    const st = ctx.state;
     const key = L.dayKey(Date.now());
+    if (st.dailyWhisper && st.dailyWhisper.day === key && st.dailyWhisper.text) {
+      return st.dailyWhisper.text;   // today's personalized whisper
+    }
     let h = 0;
     for (const c of key) h = (h * 31 + c.charCodeAt(0)) >>> 0;
     return D.AFFIRMATIONS[h % D.AFFIRMATIONS.length];
@@ -169,8 +192,10 @@ const GroveUI = {};
       }).join('');
     }
 
+    maybeFetchDailyWhisper();
     view.innerHTML = `
-      <div class="affirmation">“${esc(affirmationOfTheDay())}”</div>
+      <div class="affirmation">“${esc(affirmationOfTheDay())}”${Whisper().speakAvailable()
+        ? ` <button class="voice-btn" data-action="voice-speak" title="Hear it" aria-label="Read the affirmation aloud">🔈</button>` : ''}</div>
       <div class="card">
         <div class="section-title">
           <h2>Hello${name} 🌤️</h2>
@@ -199,8 +224,13 @@ const GroveUI = {};
       const stage = L.goalStage(g);
       const done = g.steps.filter(s => s.done).length;
       const pct = Math.round((done / g.steps.length) * 100);
+      const moon = realCircle() ? `
+        <button class="moon-toggle ${g.private ? 'on' : ''}" data-action="toggle-private" data-goal="${g.id}"
+          title="${g.private ? 'Private — your circle sees progress only' : 'Shared with your circle'}"
+          aria-label="Toggle goal privacy">${g.private ? '🌙' : '🌤️'}</button>` : '';
       return `
       <div class="plant-card" id="plant-${g.id}">
+        ${moon}
         ${G.plantSvg(stage, dom.color)}
         <div class="pname">${esc(g.emoji)} ${esc(g.name)}</div>
         <div class="pstage">${stageName(stage)} · ${done}/${g.steps.length} steps</div>
@@ -236,38 +266,109 @@ const GroveUI = {};
 
   // ---------- Circle ----------
   function feedIcon(type) {
-    return { step: '🌱', bloom: '🌸', struggle: '🌧️', recovery: '🌈', cheer_player: '☀️', digest: '🍃', welcome: '👋' }[type] || '🌿';
+    return { step: '🌱', bloom: '🌸', struggle: '🌧️', recovery: '🌈', cheer_player: '☀️', digest: '🍃', welcome: '👋', leave: '🍂' }[type] || '🌿';
   }
 
-  function renderCircle() {
-    const st = ctx.state;
-    const view = $('#view-circle');
+  function syncStatusChip() {
+    const s = syncer() ? syncer().status() : 'idle';
+    const label = { synced: 'synced ✓', syncing: 'syncing…', offline: 'offline — will retry', idle: 'ready' }[s] || s;
+    return `<span class="sync-chip ${s === 'offline' ? 'offline' : ''}">${label}</span>`;
+  }
 
-    const members = st.circle.members.map(m => {
-      const def = memberDef(m.id);
-      const tags = def.goals.map(g => {
-        const dom = domainById(g.domain);
-        return `<span class="goal-tag" style="background:${dom.color}">${esc(g.name)}</span>`;
-      }).join(' ');
+  function realCircleHeader() {
+    const st = ctx.state;
+    const rc = realCircle();
+    if (rc) {
       return `
+      <div class="card">
+        <div class="section-title"><h2>${esc(rc.name)} 💛</h2>${syncStatusChip()}</div>
+        <div class="invite-row">
+          <span class="invite-chip">Invite code: <b>${esc(rc.inviteCode)}</b></span>
+          <button class="btn small secondary" data-action="rc-copy-code">Copy invite link</button>
+          <button class="btn small accent" data-action="rc-boost-open">Ask for a boost 💛</button>
+        </div>
+        <p class="sub" style="margin-top:8px">${esc(D.REAL_CIRCLE.spiritHint)}</p>
+      </div>`;
+    }
+    if (netConfigured()) {
+      return `
+      <div class="card">
+        <div class="section-title"><h2>${esc(D.REAL_CIRCLE.makeRealTitle)}</h2></div>
+        <p class="sub" style="margin:6px 0 10px">${esc(D.REAL_CIRCLE.makeRealBody)}</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn accent" data-action="rc-create-open">Start a circle</button>
+          <button class="btn secondary" data-action="rc-join-open">Join with a code</button>
+        </div>
+      </div>`;
+    }
+    return `
+      <div class="card">
+        <div class="section-title"><h2>${esc(D.REAL_CIRCLE.makeRealTitle)}</h2></div>
+        <p class="sub" style="margin-top:6px">${esc(D.REAL_CIRCLE.setupBody)}</p>
+      </div>`;
+  }
+
+  function memberCardHtml(entry) {
+    if (entry.kind === 'real') {
+      const m = entry.member;
+      return `
+      <div class="member-card">
+        <span class="ribbon-real">real</span>
+        ${G.avatarSvg(avatarPaletteFor(m.avatarId))}
+        <div class="mname">${esc(m.name)}</div>
+        <div class="mbio">Growing right beside you — cheer her on.</div>
+        <button class="btn small accent" data-action="cheer-real" data-member="${esc(m.id)}">Send sunshine ☀️</button>
+      </div>`;
+    }
+    const def = entry.member;
+    const tags = def.goals.map(g => {
+      const dom = domainById(g.domain);
+      return `<span class="goal-tag" style="background:${dom.color}">${esc(g.name)}</span>`;
+    }).join(' ');
+    return `
       <div class="member-card">
         ${G.avatarSvg(def.palette)}
         <div class="mname">${esc(def.name)}</div>
+        ${realCircle() ? `<div class="spirit-tag">${esc(D.REAL_CIRCLE.spiritTag)}</div>` : ''}
         <div class="mbio">${esc(def.bio)}</div>
         <div style="display:flex;flex-direction:column;gap:4px;align-items:center;margin:6px 0">${tags}</div>
-        <button class="btn small accent" data-action="cheer" data-member="${m.id}">Send sunshine ☀️</button>
+        <button class="btn small accent" data-action="cheer" data-member="${def.id}">Send sunshine ☀️</button>
       </div>`;
-    }).join('');
+  }
 
-    const feed = st.circle.feed.slice().sort((a, b) => b.ts - a.ts).slice(0, 25).map(e => {
-      const def = memberDef(e.memberId);
-      if (!def) return '';
-      const canCheer = !e.cheered && e.type !== 'cheer_player';
-      const btn = canCheer
-        ? `<button class="btn small ${e.type === 'struggle' ? 'accent' : 'secondary'}" data-action="cheer" data-member="${e.memberId}" data-event="${e.id}">
+  function feedItemHtml(e) {
+    const st = ctx.state;
+    if (e.real) {
+      const own = realCircle() && e.memberId === st.net.circle.memberId;
+      const canCheer = !own && !e.cheered
+        && e.type !== 'cheer_player' && e.type !== 'welcome' && e.type !== 'leave';
+      let btn = canCheer
+        ? `<button class="btn small ${e.type === 'struggle' ? 'accent' : 'secondary'}" data-action="cheer-real" data-member="${esc(e.memberId)}" data-event="${esc(e.id)}">
             ${e.type === 'struggle' ? 'Send encouragement 💛' : 'Send sunshine ☀️'}</button>`
         : (e.cheered ? `<button class="btn small cheered" disabled>Sunshine sent ✓</button>` : '');
+      if (canCheer && ai()) {
+        btn += e.type === 'struggle'
+          ? ` <button class="btn small secondary whisper-btn" data-action="whisper-replies" data-member="${esc(e.memberId)}" data-event="${esc(e.id)}">✨ suggest a reply</button>`
+          : ` <button class="btn small secondary whisper-btn" data-action="whisper-personal" data-member="${esc(e.memberId)}" data-event="${esc(e.id)}" data-name="${esc(e.name)}" title="Make it personal">✨</button>`;
+      }
       return `
+      <div class="feed-item ${e.type}">
+        <div class="fava">${G.avatarSvg(avatarPaletteFor(e.avatarId))}</div>
+        <div style="flex:1">
+          <div class="ftext">${feedIcon(e.type)} ${esc(e.text)}</div>
+          <div class="ftime">${own ? 'you' : esc(e.name)} · ${timeAgo(e.ts)}</div>
+          ${btn ? `<div style="margin-top:6px">${btn}</div>` : ''}
+        </div>
+      </div>`;
+    }
+    const def = memberDef(e.memberId);
+    if (!def) return '';
+    const canCheer = !e.cheered && e.type !== 'cheer_player';
+    const btn = canCheer
+      ? `<button class="btn small ${e.type === 'struggle' ? 'accent' : 'secondary'}" data-action="cheer" data-member="${e.memberId}" data-event="${e.id}">
+          ${e.type === 'struggle' ? 'Send encouragement 💛' : 'Send sunshine ☀️'}</button>`
+      : (e.cheered ? `<button class="btn small cheered" disabled>Sunshine sent ✓</button>` : '');
+    return `
       <div class="feed-item ${e.type}">
         <div class="fava">${G.avatarSvg(def.palette)}</div>
         <div style="flex:1">
@@ -276,13 +377,23 @@ const GroveUI = {};
           ${btn ? `<div style="margin-top:6px">${btn}</div>` : ''}
         </div>
       </div>`;
-    }).join('');
+  }
+
+  function renderCircle() {
+    const st = ctx.state;
+    const view = $('#view-circle');
+    const roster = Social().roster(st, D);
+    const members = roster.map(memberCardHtml).join('');
+    const feed = st.circle.feed.slice().sort((a, b) => b.ts - a.ts).slice(0, 25)
+      .map(feedItemHtml).join('');
 
     view.innerHTML = `
+      ${realCircleHeader()}
       <div class="sunshine-banner">☀️ <div><strong>${st.sunshineSent}</strong> sunshine sent —
         cheering others counts as much as your own steps here.</div></div>
       <div class="card">
-        <div class="section-title"><h2>Your Circle 💛</h2><span class="sub">five women, real goals, no judgment</span></div>
+        <div class="section-title"><h2>Your Circle 💛</h2>
+          <span class="sub">${realCircle() ? 'real friends and garden spirits' : 'five women, real goals, no judgment'}</span></div>
         <div class="member-scroll" style="margin-top:10px">${members}</div>
       </div>
       <div class="card">
@@ -385,6 +496,7 @@ const GroveUI = {};
       </div>
       <div class="card">
         <div class="section-title"><h2>Growth Rings 📖</h2><span class="sub">your reflections</span></div>
+        ${ai() ? `<div style="margin:8px 0"><button class="btn secondary small whisper-btn" data-action="whisper-insights">✨ what do my rings say?</button></div><div id="whisper-insights-out"></div>` : ''}
         ${journal || '<div class="empty-note">When a goal blooms, your reflection is kept here.</div>'}
       </div>
       <div class="card">
@@ -395,7 +507,19 @@ const GroveUI = {};
           <input type="file" id="import-file" accept=".json,application/json" class="hidden">
           <button class="btn small" style="background:var(--danger)" data-action="reset">Start over</button>
         </div>
-        <p class="sub" style="margin-top:6px">Everything lives in this browser only. Export a backup any time.</p>
+        <p class="sub" style="margin-top:6px">Everything lives in this browser only. Export a backup any time
+          ${realCircle() ? '— it includes your circle membership.' : '.'}</p>
+        ${realCircle() ? `
+        <div class="settings-row" style="margin-top:10px">
+          <span class="invite-chip">Circle: <b>${esc(realCircle().name)}</b></span>
+          <button class="btn small" style="background:var(--danger)" data-action="rc-leave">Leave circle</button>
+        </div>` : ''}
+        ${ai() ? `
+        <div class="settings-row">
+          <span class="sub">Whisperer (AI): <b>${Whisper().consentGranted(st) ? 'listening ✨' : 'off'}</b></span>
+          ${Whisper().consentGranted(st)
+            ? `<button class="btn small secondary" data-action="whisper-consent-revoke">Turn off</button>` : ''}
+        </div>` : ''}
       </div>`;
   }
 
@@ -405,7 +529,7 @@ const GroveUI = {};
       onboarding: isOnboarding, stage: isOnboarding ? 'welcome' : 'template',
       name: ctx.state.player.name || '', avatarId: ctx.state.player.avatarId || 0,
       accentId: ctx.state.player.accentId || 0,
-      domain: 'career', goalName: '', goalEmoji: '🌱', steps: [],
+      domain: 'career', goalName: '', goalEmoji: '🌱', steps: [], private: false,
     };
     renderWizard();
   }
@@ -468,6 +592,10 @@ const GroveUI = {};
         <div class="sub" style="font-weight:600;margin-bottom:4px">Tiny steps (${ob.steps.length})</div>
         <div class="steps-editor">${stepRows}</div>
         <button class="btn secondary small" data-action="ob-add-step">+ add a step</button>
+        ${ai() ? `<button class="btn secondary small whisper-btn" data-action="whisper-steps">🪄 draft my tiny steps</button>` : ''}
+        ${netConfigured() ? `<label class="privacy-row">
+          <input type="checkbox" id="ob-private" ${ob.private ? 'checked' : ''}>
+          🌙 keep this goal private to me</label>` : ''}
         <div class="modal-actions">
           <button class="btn secondary" data-action="ob-back">← Back</button>
           <button class="btn accent" data-action="ob-finish">🌱 Plant this goal</button>
@@ -480,6 +608,8 @@ const GroveUI = {};
     if (nameEl) ob.name = nameEl.value.trim();
     const goalEl = $('#ob-goal-name');
     if (goalEl) ob.goalName = goalEl.value.trim();
+    const privEl = $('#ob-private');
+    if (privEl) ob.private = privEl.checked;
     document.querySelectorAll('.ob-step').forEach(inp => {
       ob.steps[Number(inp.dataset.idx)] = inp.value;
     });
@@ -494,7 +624,7 @@ const GroveUI = {};
     const goal = {
       id: uid('g'), name: ob.goalName, domain: ob.domain, emoji: ob.goalEmoji,
       steps: steps.map(text => ({ id: uid('s'), text, done: false, doneAt: null })),
-      createdAt: Date.now(), bloomedAt: null, reflection: null,
+      createdAt: Date.now(), bloomedAt: null, reflection: null, private: !!ob.private,
     };
     st.goals.push(goal);
 
@@ -518,10 +648,16 @@ const GroveUI = {};
     }
     const newBadges = L.evaluateBadges(st, Date.now());
     announceBadges(newBadges);
+    const wasOnboarding = ob.onboarding;
     ob = null;
     closeModal();
     ctx.save();
     renderAll();
+    if (wasOnboarding && pendingJoin && netConfigured()) {
+      const code = pendingJoin;
+      pendingJoin = null;
+      setTimeout(() => { switchView('circle'); openJoinModal(code); }, 700);
+    }
   }
 
   function applyAccent() {
@@ -561,6 +697,18 @@ const GroveUI = {};
     const levelAfter = L.levelForXp(st.xp);
     if (levelAfter.level > levelBefore) toast(`✨ Level up — you're a <strong>${esc(levelAfter.title)}</strong> now`, 'gold');
 
+    // Real circle: share the step (title-level only), and if a boost was out,
+    // this step is the comeback — credit everyone who cheered.
+    if (realCircle() && syncer()) {
+      syncer().queue(Social().buildStepEvent(goal, L.goalStage(goal)));
+      if (events.some(e => e.type === 'bloom')) syncer().queue(Social().buildBloomEvent(goal));
+      if (st.net.playerStruggle) {
+        syncer().queue(Social().buildRecoverEvent(st.net.playerStruggle.supporters));
+        st.net.playerStruggle = null;
+        toast('🌈 That step was your comeback — your circle saw it.', 'rose');
+      }
+    }
+
     announceBadges(L.evaluateBadges(st, Date.now()));
     ctx.save();
     renderAll();
@@ -588,6 +736,7 @@ const GroveUI = {};
         <p class="sub" style="margin-top:10px;font-weight:600">One line for your Growth Rings: what did this teach you?</p>
         <input class="text-input" id="reflection-input" maxlength="140"
           placeholder="e.g. Starting badly beats not starting" style="margin:8px 0 4px">
+        ${Whisper().speechAvailable() ? `<button class="btn small secondary mic-btn" data-action="voice-dictate" data-target="reflection-input">🎙️ dictate</button>` : ''}
         <div class="modal-actions" style="justify-content:center">
           <button class="btn secondary" data-action="skip-reflection" data-goal="${goal.id}">Skip</button>
           <button class="btn accent" data-action="save-reflection" data-goal="${goal.id}">Keep it 📖</button>
@@ -626,6 +775,293 @@ const GroveUI = {};
     announceBadges(L.evaluateBadges(st, Date.now()));
     ctx.save();
     renderAll();
+  }
+
+  // ---------- real circle actions ----------
+  function openCreateModal() {
+    showModal(`
+      <h2>Start a circle 💛</h2>
+      <p class="sub">Name it, then share the invite code with up to four women you trust.</p>
+      <label class="sub" style="font-weight:600">Circle name</label>
+      <input class="text-input" id="rc-name" maxlength="40" placeholder="e.g. The Tuesday Bloomers" style="margin:6px 0 4px">
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Cancel</button>
+        <button class="btn accent" data-action="rc-create">Create circle</button>
+      </div>`);
+  }
+
+  function openJoinModal(code) {
+    showModal(`
+      <h2>Join a circle 🌱</h2>
+      <p class="sub">Enter the six-letter code your friend shared.</p>
+      <input class="text-input" id="rc-code" maxlength="6" placeholder="ABC234" value="${esc(code || '')}"
+        style="margin:10px 0 4px;text-transform:uppercase;letter-spacing:.2em;font-weight:700">
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Cancel</button>
+        <button class="btn accent" data-action="rc-join">Join</button>
+      </div>`);
+  }
+
+  function openBoostModal() {
+    showModal(`
+      <h2>Ask for a boost 💛</h2>
+      <p class="sub">${esc(D.REAL_CIRCLE.boostHint)}</p>
+      <textarea class="text-input boost-composer" id="boost-text" maxlength="280"
+        placeholder="${esc(D.REAL_CIRCLE.boostPlaceholder)}"></textarea>
+      ${Whisper().speechAvailable() ? `<button class="btn small secondary mic-btn" data-action="voice-dictate" data-target="boost-text">🎙️ dictate</button>` : ''}
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Not now</button>
+        <button class="btn accent" data-action="rc-boost-send">Send to my circle</button>
+      </div>`);
+  }
+
+  async function handleCreateCircle() {
+    const name = ($('#rc-name') ? $('#rc-name').value.trim() : '') || 'Our Grove';
+    if (!flows()) return;
+    closeModal();
+    toast('Planting your circle…');
+    const r = await flows().createCircleFlow(name);
+    if (r.ok) toast(`Circle “${esc(name)}” is live — share the code! 💛`, 'rose');
+    else toast(esc(D.REAL_CIRCLE.joinErrors[r.error] || D.REAL_CIRCLE.joinErrors.offline));
+    renderAll();
+  }
+
+  async function handleJoinCircle() {
+    const code = ($('#rc-code') ? $('#rc-code').value.trim().toUpperCase() : '');
+    if (code.length !== 6) { toast('The code has six characters 🌱'); return; }
+    if (!flows()) return;
+    closeModal();
+    toast('Finding your circle…');
+    const r = await flows().joinCircleFlow(code);
+    if (r.ok) toast(`Welcome to “${esc(r.circleName)}” 💛`, 'rose');
+    else toast(esc(D.REAL_CIRCLE.joinErrors[r.error] || D.REAL_CIRCLE.joinErrors.offline));
+    renderAll();
+  }
+
+  function copyInviteLink() {
+    const rc = realCircle();
+    if (!rc) return;
+    const link = flows() ? flows().buildInviteLink(rc.inviteCode) : rc.inviteCode;
+    const fallback = () => window.prompt('Copy this invite link:', link);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link)
+        .then(() => toast('Invite link copied — send it to a friend 💌', 'rose'), fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function handleBoostSend() {
+    const text = ($('#boost-text') ? $('#boost-text').value.trim() : '');
+    if (!text) { toast('Say a little about what’s heavy 💛'); return; }
+    const st = ctx.state;
+    if (!realCircle() || !syncer()) return;
+    const ev = Social().buildStruggleEvent(text);
+    st.net.playerStruggle = { eventKey: ev.client_key, postedAt: Date.now(), supporters: [] };
+    st.circle.feed.push({
+      id: 'r-' + ev.client_key, ts: Date.now(), type: 'struggle',
+      text: `${st.player.name || 'You'}: “${ev.payload.text}”`,
+      real: true, memberId: st.net.circle.memberId, name: st.player.name || 'You',
+      avatarId: String(st.player.avatarId), cheered: false,
+    });
+    syncer().queue(ev);
+    closeModal();
+    toast('Your circle will see it — asking is a strength 💛', 'rose');
+    ctx.save();
+    renderAll();
+  }
+
+  function handleCheerReal(memberId, eventId) {
+    const st = ctx.state;
+    if (!realCircle() || !syncer()) return;
+    const phrase = D.CHEER_PHRASES[Math.floor(Math.random() * D.CHEER_PHRASES.length)];
+    if (eventId) {
+      const item = st.circle.feed.find(e => e.id === eventId);
+      if (item) item.cheered = true;
+    }
+    L.cheer(st, Date.now());
+    syncer().queue(Social().buildCheerEvent(memberId, phrase.id));
+    const m = st.net.members.find(x => x.id === memberId);
+    toast(`☀️ “${esc(phrase.text)}” → ${esc(m ? m.name : 'your friend')} · +${L.XP.CHEER} xp`);
+    announceBadges(L.evaluateBadges(st, Date.now()));
+    ctx.save();
+    renderAll();
+  }
+
+  async function handleLeaveCircle() {
+    if (!window.confirm('Leave this circle? Your garden stays with you; your seat opens up.')) return;
+    if (!flows()) return;
+    const r = await flows().leaveCircleFlow();
+    toast(r.ok ? 'You stepped out of the circle 🍂' : esc(D.REAL_CIRCLE.joinErrors.offline));
+    renderAll();
+  }
+
+  function handleTogglePrivate(goalId) {
+    const g = ctx.state.goals.find(x => x.id === goalId);
+    if (!g) return;
+    g.private = !g.private;
+    toast(g.private
+      ? 'Kept as a quiet goal 🌙 — your circle sees progress only'
+      : 'Shared with your circle 🌤️');
+    ctx.save();
+    renderAll();
+  }
+
+  // ---------- the whisperer (AI, consent-gated) ----------
+  function withConsent(fn) {
+    if (Whisper().consentGranted(ctx.state)) { fn(); return; }
+    pendingConsentAction = fn;
+    showModal(`
+      <h2>The Grove Whisperer ✨</h2>
+      <p class="sub">A little AI lives in real groves. When you tap a whisperer button,
+        only the words involved — a goal name you're drafting steps for, or the journal
+        lines you ask it to read — are sent to the platform's AI to write something back.
+        Nothing is ever sent until you tap.</p>
+      <p class="sub consent-note">🌙 Private goals are never included. You can turn the
+        whisperer off any time in More → your data.</p>
+      <div class="modal-actions">
+        <button class="btn secondary" data-action="close-modal">Not now</button>
+        <button class="btn accent" data-action="whisper-consent-accept">Let it whisper ✨</button>
+      </div>`);
+  }
+
+  function handleConsentAccept() {
+    Whisper().grantConsent(ctx.state, Date.now());
+    ctx.save();
+    closeModal();
+    const fn = pendingConsentAction;
+    pendingConsentAction = null;
+    if (fn) fn();
+  }
+
+  function handleConsentRevoke() {
+    Whisper().revokeConsent(ctx.state);
+    ctx.save();
+    toast('The whisperer sleeps. Your grove is yours alone 🌙');
+    renderAll();
+  }
+
+  function handleWhisperSteps() {
+    // Collect BEFORE the consent modal replaces the wizard DOM, or the typed
+    // goal name is lost when the continuation finally runs.
+    collectWizardInputs();
+    withConsent(async () => {
+      if (!ob) return;
+      if (!ob.goalName) { toast('Name your goal first 🌱'); return; }
+      if (!ai()) { toast(esc(D.REAL_CIRCLE.aiQuiet)); return; }
+      toast('🪄 The whisperer is thinking…');
+      const r = await ai().steps({ goalName: ob.goalName, domain: ob.domain });
+      if (!ob) return;   // wizard closed while we waited
+      if (r.ok && Array.isArray(r.steps) && r.steps.length >= 2) {
+        ob.steps = r.steps.slice(0, 10).map(s => String(s));
+        renderWizard();
+        toast('Steps drafted — edit anything ✨', 'rose');
+      } else {
+        toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+      }
+    });
+  }
+
+  function sendCheerWithText(memberId, eventId, text) {
+    const st = ctx.state;
+    if (!realCircle() || !syncer()) return;
+    if (eventId) {
+      const item = st.circle.feed.find(e => e.id === eventId);
+      if (item) item.cheered = true;
+    }
+    L.cheer(st, Date.now());
+    syncer().queue(Social().buildCheerEvent(memberId, 'ai', text));
+    closeModal();
+    toast(`☀️ Sent: “${esc(text)}”`);
+    announceBadges(L.evaluateBadges(st, Date.now()));
+    ctx.save();
+    renderAll();
+  }
+
+  function handleWhisperReplies(memberId, eventId) {
+    withConsent(async () => {
+      const item = ctx.state.circle.feed.find(e => e.id === eventId);
+      if (!item || !ai()) return;
+      toast('✨ Listening for the right words…');
+      const r = await ai().boostReplies({ struggleText: item.text });
+      if (r.ok && Array.isArray(r.replies) && r.replies.length) {
+        showModal(`
+          <h2>Reply with warmth 💛</h2>
+          <p class="sub">Pick one — it sends as your sunshine, in your name.</p>
+          ${r.replies.slice(0, 3).map(t => `
+            <button class="reply-chip" data-action="whisper-reply-send"
+              data-member="${esc(memberId)}" data-event="${esc(eventId)}"
+              data-text="${esc(t)}">${esc(t)}</button>`).join('')}
+          <div class="modal-actions">
+            <button class="btn secondary" data-action="close-modal">I'll write my own</button>
+          </div>`);
+      } else {
+        toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+      }
+    });
+  }
+
+  function handleWhisperPersonal(memberId, eventId, name) {
+    withConsent(async () => {
+      const item = ctx.state.circle.feed.find(e => e.id === eventId);
+      if (!ai()) return;
+      toast('✨ Finding the right words…');
+      const r = await ai().cheer({
+        toName: name, goalTitle: item ? (item.goalTitle || null) : null, kind: 'step',
+      });
+      if (r.ok && r.line) sendCheerWithText(memberId, eventId, String(r.line));
+      else toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+    });
+  }
+
+  function handleWhisperInsights() {
+    withConsent(async () => {
+      if (!ai()) return;
+      const out = $('#whisper-insights-out');
+      if (out) out.innerHTML = '<div class="whisper-card">✨ reading your rings…</div>';
+      const r = await ai().insights(Whisper().insightsPayload(ctx.state));
+      if (r.ok && r.text) {
+        if (out) out.innerHTML = `<div class="whisper-card">✨ ${esc(r.text)}</div>`;
+      } else {
+        if (out) out.innerHTML = '';
+        toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+      }
+    });
+  }
+
+  function maybeFetchDailyWhisper() {
+    const st = ctx.state;
+    if (dailyWhisperTried || !ai() || !Whisper().consentGranted(st)) return;
+    if (!Whisper().dailyWhisperDue(st, Date.now())) return;
+    dailyWhisperTried = true;
+    ai().cheer(Object.assign({ kind: 'daily' }, Whisper().whisperContext(st))).then(r => {
+      if (r.ok && r.line) {
+        Whisper().rememberWhisper(st, String(r.line), Date.now());
+        ctx.save();
+        if (currentView === 'today') renderView('today');
+      }
+    });
+  }
+
+  function handleDictate(targetId, btn) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    if (dictation) {
+      dictation.stop();
+      dictation = null;
+      btn.classList.remove('listening');
+      return;
+    }
+    dictation = Whisper().makeDictation((text) => {
+      el.value = (el.value ? el.value + ' ' : '') + text;
+      dictation = null;
+      btn.classList.remove('listening');
+      el.focus();
+    });
+    if (dictation) {
+      btn.classList.add('listening');
+      dictation.start();
+    }
   }
 
   function handleBuy(itemId) {
@@ -697,6 +1133,25 @@ const GroveUI = {};
     else if (a === 'ob-finish') finishWizard();
     else if (a === 'save-reflection') saveReflection(btn.dataset.goal, false);
     else if (a === 'skip-reflection') saveReflection(btn.dataset.goal, true);
+    else if (a === 'rc-create-open') openCreateModal();
+    else if (a === 'rc-join-open') openJoinModal('');
+    else if (a === 'rc-create') handleCreateCircle();
+    else if (a === 'rc-join') handleJoinCircle();
+    else if (a === 'rc-copy-code') copyInviteLink();
+    else if (a === 'rc-boost-open') openBoostModal();
+    else if (a === 'rc-boost-send') handleBoostSend();
+    else if (a === 'rc-leave') handleLeaveCircle();
+    else if (a === 'cheer-real') handleCheerReal(btn.dataset.member, btn.dataset.event);
+    else if (a === 'toggle-private') handleTogglePrivate(btn.dataset.goal);
+    else if (a === 'whisper-consent-accept') handleConsentAccept();
+    else if (a === 'whisper-consent-revoke') handleConsentRevoke();
+    else if (a === 'whisper-steps') handleWhisperSteps();
+    else if (a === 'whisper-replies') handleWhisperReplies(btn.dataset.member, btn.dataset.event);
+    else if (a === 'whisper-reply-send') sendCheerWithText(btn.dataset.member, btn.dataset.event, btn.dataset.text);
+    else if (a === 'whisper-personal') handleWhisperPersonal(btn.dataset.member, btn.dataset.event, btn.dataset.name);
+    else if (a === 'whisper-insights') handleWhisperInsights();
+    else if (a === 'voice-speak') Whisper().speak(affirmationOfTheDay());
+    else if (a === 'voice-dictate') handleDictate(btn.dataset.target, btn);
     else if (a === 'close-modal') { ob = null; closeModal(); }
     else if (a === 'export') handleExport();
     else if (a === 'import-trigger') $('#import-file').click();
@@ -726,6 +1181,8 @@ const GroveUI = {};
   GroveUI.switchView = switchView;
   GroveUI.toast = toast;
   GroveUI.startOnboarding = function () { startWizard(true); };
+  GroveUI.openJoinModal = openJoinModal;
+  GroveUI.setPendingJoin = function (code) { pendingJoin = code; };
   GroveUI.comebackLine = function () {
     const lines = D.COMEBACK_LINES;
     return lines[Math.floor(Math.random() * lines.length)];
