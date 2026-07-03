@@ -1,0 +1,113 @@
+# Tests
+
+## Test 1 - App loads to onboarding [sanity]
+Viewport: desktop
+Description: A fresh visitor sees Grove's onboarding welcome.
+
+Steps:
+1. Open the app
+2. Wait for load
+
+Expected: A welcome dialog titled "Welcome to Grove" is visible with a name input and a "Next: plant a goal" button.
+
+## Test 2 - Onboarding plants the first goal
+Viewport: mobile
+Description: Completing onboarding creates a goal and lands on the Today view.
+
+Steps:
+1. Open the app
+2. Type a unique name like "Anu-<timestamp>" into the name input
+3. Tap "Next: plant a goal"
+4. Tap the first goal template in the list
+5. Tap "Plant this goal"
+
+Expected: The Today view greets the player by name and lists at least one tiny step with a checkmark button.
+
+## Test 3 - Circle tab offers to start a real circle
+Viewport: desktop
+Description: After onboarding, the Circle tab shows the make-it-real card.
+
+Steps:
+1. Open the app and complete onboarding with a unique name
+2. Click the "Circle" tab
+
+Expected: A card titled "Make it real" is visible with "Start a circle" and "Join with a code" buttons, and five member cards are shown.
+
+## Test 4 - Creating a circle shows an invite code
+Viewport: desktop
+Description: Starting a circle produces a shareable invite code.
+
+Steps:
+1. Open the app and complete onboarding with a unique name
+2. Click the "Circle" tab
+3. Click "Start a circle"
+4. Type "The Bloomers" into the circle name input
+5. Click "Create circle"
+6. Wait for the circle header to appear
+
+Expected: The Circle tab header shows "The Bloomers", an "Invite code:" chip with a six-character code, and a "Copy invite link" button. One member card is labeled REAL is not required; garden spirit tags are visible on simulated members.
+
+## Test 5 - A step taken by one member reaches another
+Viewport: desktop
+Description: Two anonymous players share a circle; Actor B's step appears in Actor A's feed.
+
+Steps:
+1. Actor A opens the app, completes onboarding with a unique name, opens Circle, starts a circle named "Sync Grove", and notes the invite code
+2. Actor B opens the app in a separate anonymous session, completes onboarding with a unique name
+3. Actor B opens the Circle tab, clicks "Join with a code", enters Actor A's invite code, and joins
+4. Actor B opens the Today view and checks off the first tiny step
+5. Actor A waits up to 60 seconds on the Circle tab for the feed to refresh
+
+Expected: Actor A's Grove Feed shows an entry saying Actor B's name took a step, and Actor B appears as a member card with a REAL ribbon.
+
+## Test 6 - First whisperer tap asks for consent
+Viewport: desktop
+Description: AI features are consent-gated; the first tap opens the consent dialog, not a network call.
+
+Steps:
+1. Open the app and complete onboarding with a unique name
+2. Open the Circle tab, start a circle named "Consent Grove"
+3. Open the Today view, then click "Plant a new goal"
+4. Click "My own goal"
+5. Type "Learn watercolors" as the goal name
+6. Click the "draft my tiny steps" button
+
+Expected: A dialog titled "The Grove Whisperer" appears explaining what is sent, with a "Let it whisper" button and a "Not now" button.
+
+## Test 7 - A resting whisperer fails warmly
+Viewport: desktop
+Description: When the AI steps endpoint is rate-limited, the wizard keeps the player's own steps and shows warm copy.
+
+QA Faults:
+```json
+[
+  {
+    "method": "POST",
+    "path": "/api/ai/steps",
+    "status": 429,
+    "body_json": {
+      "error": "ai-rest"
+    }
+  }
+]
+```
+
+Steps:
+1. Open the app and complete onboarding with a unique name
+2. Open the Circle tab, start a circle named "Rest Grove"
+3. Open the Today view, click "Plant a new goal", click "My own goal", and type "Learn pottery" as the goal name
+4. Click "draft my tiny steps"
+5. Click "Let it whisper" in the consent dialog
+
+Expected: A toast contains "The whisperer is resting" and the three placeholder tiny-step inputs are unchanged.
+
+## Test 8 - Mobile circle layout stays usable
+Viewport: mobile
+Description: On a phone, the circle view and boost composer fit without horizontal scrolling.
+
+Steps:
+1. Open the app on mobile and complete onboarding with a unique name
+2. Open the Circle tab, start a circle named "Pocket Grove"
+3. Tap "Ask for a boost 💛"
+
+Expected: The boost composer dialog is fully visible with its textarea and "Send to my circle" button reachable, and the page does not scroll horizontally.
