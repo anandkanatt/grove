@@ -7,9 +7,21 @@ let storage = (typeof localStorage !== 'undefined') ? localStorage : null;
 
 GroveState._setStorage = function (s) { storage = s; };
 
+function defaultNet() {
+  return {
+    session: null,          // {access, refresh, userId} once signed in
+    circle: null,           // {id, name, inviteCode, memberId} once created/joined
+    members: [],            // cached real members [{id, name, avatarId, accentId, joinedAt}]
+    cursor: 0,              // highest server event id seen
+    outbox: [],             // events awaiting push
+    lastSyncAt: null,
+    playerStruggle: null,   // {eventKey, postedAt, supporters: [memberId]}
+  };
+}
+
 GroveState.defaultState = function (now) {
   return {
-    version: 1,
+    version: 2,
     player: { name: '', avatarId: 0, accentId: 0, createdAt: now },
     xp: 0,
     petals: 0,
@@ -31,12 +43,28 @@ GroveState.defaultState = function (now) {
     },
     lastVisit: now,
     onboarded: false,
+    net: defaultNet(),
   };
+};
+
+// v1 saves gain the net block and per-goal privacy flag; v2 passes through
+// (with any missing net keys refilled, so partial/older exports stay loadable).
+GroveState.migrate = function (raw) {
+  if (raw.version === 1) raw.version = 2;
+  if (!raw.net || typeof raw.net !== 'object') raw.net = defaultNet();
+  const defaults = defaultNet();
+  for (const k of Object.keys(defaults)) {
+    if (!(k in raw.net)) raw.net[k] = defaults[k];
+  }
+  for (const g of raw.goals) {
+    if (typeof g.private !== 'boolean') g.private = false;
+  }
+  return raw;
 };
 
 function isValid(raw) {
   return !!raw && typeof raw === 'object'
-    && raw.version === 1
+    && (raw.version === 1 || raw.version === 2)
     && raw.player && typeof raw.player === 'object'
     && Array.isArray(raw.goals)
     && raw.streak && typeof raw.streak === 'object'
@@ -55,7 +83,7 @@ GroveState.load = function () {
     const text = storage.getItem(SAVE_KEY);
     if (!text) return null;
     const raw = JSON.parse(text);
-    return isValid(raw) ? raw : null;
+    return isValid(raw) ? GroveState.migrate(raw) : null;
   } catch (e) {
     return null;
   }
@@ -73,7 +101,7 @@ GroveState.importJson = function (text) {
   let raw;
   try { raw = JSON.parse(text); } catch (e) { throw new Error('invalid save'); }
   if (!isValid(raw)) throw new Error('invalid save');
-  return raw;
+  return GroveState.migrate(raw);
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = GroveState;

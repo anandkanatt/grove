@@ -262,9 +262,9 @@ function fakeStorage() {
 
 test('defaultState has the full schema', () => {
   const st = S.defaultState(T('2026-07-02'));
-  assertEq(st.version, 1);
+  assertEq(st.version, 2);
   for (const key of ['player', 'xp', 'petals', 'streak', 'goals', 'journal', 'badges',
-    'decor', 'shopOwned', 'sunshineSent', 'challengesWon', 'circle', 'lastVisit', 'onboarded']) {
+    'decor', 'shopOwned', 'sunshineSent', 'challengesWon', 'circle', 'lastVisit', 'onboarded', 'net']) {
     assert(key in st, `missing key ${key}`);
   }
   assertEq(st.streak.shields, 1, 'starts with one gift shield');
@@ -299,6 +299,47 @@ test('export/import round-trips; garbage import throws', () => {
   assertEq(back.player.name, 'Priya');
   assertThrows(() => S.importJson('{}'), 'empty object rejected');
   assertThrows(() => S.importJson('not json'), 'non-json rejected');
+});
+
+// ---------- state v2 (real circles) ----------
+test('defaultState carries the v2 net block', () => {
+  const st = S.defaultState(T('2026-07-02'));
+  assertEq(st.net, { session: null, circle: null, members: [], cursor: 0,
+    outbox: [], lastSyncAt: null, playerStruggle: null });
+});
+test('a v1 save loads and migrates to v2', () => {
+  const storage = fakeStorage();
+  S._setStorage(storage);
+  const v1 = S.defaultState(T('2026-07-01'));
+  v1.version = 1;
+  delete v1.net;
+  v1.goals.push({ id: 'g1', name: 'x', domain: 'career', emoji: 'x', steps: [],
+    createdAt: 0, bloomedAt: null, reflection: null });
+  storage.setItem('grove-save-v1', JSON.stringify(v1));
+  const back = S.load();
+  assertEq(back.version, 2);
+  assertEq(back.net.outbox, [], 'net block added');
+  assertEq(back.net.cursor, 0);
+  assertEq(back.goals[0].private, false, 'goals gain the private flag');
+});
+test('v2 save/load round-trip preserves the net block', () => {
+  const storage = fakeStorage();
+  S._setStorage(storage);
+  const st = S.defaultState(T('2026-07-02'));
+  st.net.cursor = 42;
+  st.net.circle = { id: 'c1', name: 'Us', inviteCode: 'ABC234', memberId: 'me' };
+  S.save(st);
+  assertEq(S.load(), st);
+});
+test('importJson migrates v1 exports and still rejects garbage', () => {
+  const v1 = S.defaultState(T('2026-07-01'));
+  v1.version = 1;
+  delete v1.net;
+  const back = S.importJson(JSON.stringify(v1));
+  assertEq(back.version, 2);
+  assert('net' in back, 'net added');
+  assertEq(back.net.session, null);
+  assertThrows(() => S.importJson('{}'), 'empty object rejected');
 });
 
 // ---------- content shape ----------
