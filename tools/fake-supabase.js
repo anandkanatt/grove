@@ -78,6 +78,20 @@ function createFake() {
 
     if (req.method === 'OPTIONS') { send(204); return; }
 
+    // Test control: POST /__control/outage {"on":true} makes every endpoint
+    // 503 until turned off — lets demos exercise offline behavior without
+    // killing the process (which would wipe in-memory sessions).
+    if (req.method === 'POST' && req.url === '/__control/outage') {
+      let raw = '';
+      req.on('data', (c) => { raw += c; });
+      req.on('end', () => {
+        try { state.outage = !!JSON.parse(raw || '{}').on; } catch (e) { state.outage = false; }
+        send(200, { outage: state.outage });
+      });
+      return;
+    }
+    if (state.outage) { send(503, { message: 'service unavailable (simulated outage)' }); return; }
+
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {

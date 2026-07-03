@@ -37,31 +37,73 @@ no internet needed. Your garden lives entirely in your own browser
 - **Giving support is gameplay.** Sunshine sent is tracked as prominently as
   steps taken, and struggle→recovery arcs make encouragement matter.
 
+## Make it real (optional): circles with actual friends
+
+Out of the box your Circle is simulated. Phase 2 lets you share a **real,
+private circle** with up to four women you know — real steps, real cheers,
+real "I'm stuck" posts — synced through a free Supabase project that *you*
+own. No accounts, no emails: players stay anonymous, identified only by a
+first name and a flower.
+
+Setup (~10 minutes, done once by whoever hosts the grove):
+
+1. Create a free project at [supabase.com](https://supabase.com).
+2. SQL Editor → paste all of [supabase/schema.sql](supabase/schema.sql) → Run.
+3. Authentication → Sign In / Up → enable **Anonymous sign-ins**.
+4. Project Settings → API → copy the URL and `anon public` key into
+   [js/config.js](js/config.js).
+5. Host this folder anywhere static (GitHub Pages works) and share your URL.
+
+Then in the game: **Circle → Make it real → Start a circle**, and send
+friends the invite link (`your-url#join=CODE`). They onboard, join, and
+everyone's steps water the same weekly challenge. Garden spirits keep the
+remaining seats warm and are always labeled — real friends are never
+simulated, and a quiet friend's flower is simply still.
+
+Worth knowing:
+
+- **Privacy:** goal titles and activity sync; the text of your steps never
+  leaves your device. Any goal can be marked 🌙 private — your circle then
+  sees progress only. Cheers are picked from a warm curated set; the only
+  free text shared is your own "ask for a boost" post, visible only to the
+  circle you invited.
+- **Your data, yours:** everything lives in *your* Supabase project. Delete
+  the project, and the cloud data is gone. Local play and export/import work
+  exactly as before.
+- **Free-tier naps:** Supabase pauses free projects after ~7 idle days. The
+  game shrugs (offline-first, actions queue and retry); to avoid naps
+  entirely, put this repo on GitHub, add `SUPABASE_URL` and
+  `SUPABASE_ANON_KEY` as repo secrets, and the included
+  [keepalive workflow](.github/workflows/supabase-keepalive.yml) pings it
+  twice a week.
+- **Try it without Supabase:** `node tools/fake-supabase.js` runs an
+  in-memory stand-in at `http://localhost:9911` — point `js/config.js` at it
+  and play with two browser profiles.
+
 ## Development
 
 ```
-node tests/run-tests.js     # 47 logic/sim/state tests, no dependencies
+node tests/run-tests.js     # 79 logic/sim/state/social/net/sync tests, no dependencies
 node tools/dev-server.js    # optional static server at http://localhost:8478
+node tools/fake-supabase.js # in-memory supabase double for local circles
 ```
 
-Plain HTML/CSS/JS, zero dependencies, no build step. Pure logic
-(`js/logic.js`, `js/sim.js`, `js/state.js`) is unit-tested in Node; the DOM
-layer (`js/ui.js`, `js/garden.js`) sits on top. All art is code-generated SVG.
+Plain HTML/CSS/JS, zero dependencies, no build step — the client talks to
+Supabase with plain `fetch`, no SDK. Pure logic (`js/logic.js`, `js/sim.js`,
+`js/state.js`, `js/social.js`, `js/net.js`, `js/sync.js`) is tested in Node;
+the DOM layer (`js/ui.js`, `js/garden.js`) sits on top. All art is
+code-generated SVG.
 
 | File | Responsibility |
 |---|---|
 | `js/data.js` | Content: goal templates, circle members & voices, copy, badges, shop |
 | `js/logic.js` | Rules: xp/levels, streaks & shields, goal stages, challenge, badges |
-| `js/sim.js` | The living Circle: catch-up activity, reactions, struggle arcs |
-| `js/state.js` | Versioned localStorage persistence, export/import |
+| `js/sim.js` | The garden spirits: catch-up activity, reactions, struggle arcs |
+| `js/state.js` | Versioned localStorage persistence (v2), migration, export/import |
+| `js/social.js` | Real circles: hybrid roster, event builders, remote classification |
+| `js/net.js` | SDK-free Supabase client: anonymous auth, RPCs, event push/pull |
+| `js/sync.js` | Outbox flush + cursor pull loop, offline handling |
 | `js/garden.js` | SVG art: plants by stage, avatars, decor, community garden |
-| `js/ui.js` / `js/main.js` | Views, wizard, toasts, boot |
-
-## v2: a real community
-
-The Circle is simulated in v1 so the game is playable instantly and privately.
-The feed is already event-shaped (append-only member events), so a real
-backend can replace `sim.js` with a sync client one day. That needs accounts,
-hosting, and moderation — see
-[docs/superpowers/specs/2026-07-02-grove-goal-garden-design.md](docs/superpowers/specs/2026-07-02-grove-goal-garden-design.md)
-for the design notes.
+| `js/ui.js` / `js/main.js` | Views, wizard, toasts, circle flows, boot |
+| `supabase/schema.sql` | Tables, row-level security, create/join RPCs |
+| `tools/fake-supabase.js` | In-memory double of the exact server contract |

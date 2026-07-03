@@ -53,6 +53,15 @@ GroveSync.makeSync = function (opts) {
     // Pull everything after the cursor and fold it in.
     const pull = await client.pullEvents(st.net.circle.id, st.net.cursor);
     if (!pull.ok) { status = 'offline'; ctx.save(); return { ok: false, changed }; }
+    // Membership changed inside this batch? Refresh the cache BEFORE
+    // classifying, so events from a brand-new member carry her name.
+    if (pull.events.some(e => e.type === 'join' || e.type === 'leave')) {
+      const mr = await client.fetchMembers(st.net.circle.id);
+      if (mr.ok) {
+        st.net.members = mr.members;
+        Social.syncSpiritSlots(st, D);
+      }
+    }
     const report = Social.applyRemote(st, D, pull.events, st.net.circle.memberId);
 
     for (const item of report.feedItems) st.circle.feed.push(item);
@@ -70,13 +79,6 @@ GroveSync.makeSync = function (opts) {
         if (!st.net.playerStruggle.supporters.includes(c.fromMemberId)) {
           st.net.playerStruggle.supporters.push(c.fromMemberId);
         }
-      }
-    }
-    if (report.memberChanged) {
-      const mr = await client.fetchMembers(st.net.circle.id);
-      if (mr.ok) {
-        st.net.members = mr.members;
-        Social.syncSpiritSlots(st, D);
       }
     }
     if (pull.cursor > st.net.cursor) st.net.cursor = pull.cursor;

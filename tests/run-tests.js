@@ -786,8 +786,10 @@ test('membership events refresh the cache and spirit slots', async () => {
     { id: 'm3', name: 'Tara', avatarId: '2', accentId: '2', joinedAt: '2026-07-03T00:00:00Z' },
   ];
   const client = makeFakeClient({
-    pullEvents: async () => ({ ok: true, cursor: 50,
-      events: [row(50, 'm3', 'join', { name: 'Tara' })] }),
+    pullEvents: async () => ({ ok: true, cursor: 51, events: [
+      row(50, 'm3', 'join', { name: 'Tara' }),
+      row(51, 'm3', 'step', { goalTitle: 'First step', stage: 1 }),
+    ] }),
     fetchMembers: async () => ({ ok: true, members: grown }),
   });
   const sync = Sync.makeSync({ ctx: syncCtx(st), client, logic: L, social: Social, data: D });
@@ -795,6 +797,9 @@ test('membership events refresh the cache and spirit slots', async () => {
   assertEq(st.net.members.length, 3);
   assertEq(st.circle.members.map(m => m.id), ['maya', 'priya', 'sofia'],
     'spirits trimmed to the free seats');
+  const stepItem = st.circle.feed.find(e => e.real && e.type === 'step');
+  assert(stepItem.text.includes('Tara'),
+    'a step in the same batch as the join is credited by name, not “A friend”');
   sync.stop();
 });
 test('an offline client keeps the outbox and reports status', async () => {
