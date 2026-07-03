@@ -17,7 +17,8 @@ const GroveUI = {};
 
   const Social = () => window.GroveSocial;
   const Whisper = () => window.GroveWhisper;
-  const netConfigured = () => !!(window.GroveConfig
+  // Any real-circle backend: the App Deploy bridge, or self-hosted Supabase config.
+  const netConfigured = () => !!window.GrovePlatform || !!(window.GroveConfig
     && window.GroveConfig.SUPABASE_URL && window.GroveConfig.SUPABASE_ANON_KEY);
   const realCircle = () => (ctx.state.net && ctx.state.net.circle) || null;
   const flows = () => (window.Grove && window.Grove.net) || null;
