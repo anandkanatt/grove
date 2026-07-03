@@ -175,6 +175,15 @@ test('challengeTarget scales with active goals, capped', () => {
   const bloomed = makeState(makeGoal(3, 3)); bloomed.goals[0].bloomedAt = 1;
   assertEq(L.challengeTarget(bloomed), 50, 'bloomed goals are not active');
 });
+test('challengeTarget is a flat 70 for real circles', () => {
+  const st = S.defaultState(T('2026-07-02'));
+  st.goals.push(makeGoal(5, 0));
+  assertEq(L.challengeTarget(st), 55, 'solo keeps the v1 formula');
+  st.net.circle = { id: 'c1', name: 'Us', inviteCode: 'ABC234', memberId: 'me' };
+  assertEq(L.challengeTarget(st), 70, 'real circle target is shared and flat');
+  L.rolloverChallengeIfNeeded(st, T('2026-07-06'));
+  assertEq(st.circle.challenge.target, 70, 'rollover arms the flat target');
+});
 test('rollover resets challenge on a new week only', () => {
   const st = makeState(makeGoal(5, 0));
   st.circle.challenge.progress = 12; st.circle.challenge.rewarded = true;

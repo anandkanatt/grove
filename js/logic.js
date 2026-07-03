@@ -157,6 +157,9 @@ GroveLogic.activeGoals = function (state) {
 };
 
 GroveLogic.challengeTarget = function (state) {
+  // A real circle computes progress from the shared event log, so every member
+  // must see the same target — a flat, reachable number for the full roster.
+  if (state.net && state.net.circle) return 70;
   return 50 + 5 * Math.min(GroveLogic.activeGoals(state).length, 4);
 };
 
