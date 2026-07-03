@@ -1,11 +1,13 @@
 'use strict';
 // Grove test suite — zero dependencies. Run: node tests/run-tests.js
+// Tests are queued and run strictly in order (async fns are awaited), so
+// shared fixtures like GroveState._setStorage never interleave.
 let passed = 0, failed = 0;
 const failures = [];
+const queue = [];
 
 function test(name, fn) {
-  try { fn(); passed++; }
-  catch (e) { failed++; failures.push({ name, message: e.message }); }
+  queue.push({ name, fn });
 }
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
 function assertEq(actual, expected, msg) {
@@ -552,6 +554,129 @@ test('real-circle copy block is complete', () => {
   assertEq(rc.quietGoalLabel, 'a quiet goal 🌙');
 });
 
+// ---------- net: supabase client (unit) ----------
+const Net = require('../js/net.js');
+
+function makeFakeFetch(script) {
+  const calls = [];
+  const fn = (url, opts = {}) => {
+    calls.push({ url: String(url), method: opts.method || 'GET',
+      headers: opts.headers || {}, body: opts.body ? JSON.parse(opts.body) : null });
+    const next = script.shift();
+    if (!next) throw new Error('fake fetch script exhausted');
+    if (next.reject) return Promise.reject(new TypeError('network down'));
+    if (next.hang) return new Promise((resolve, reject) => {
+      if (opts.signal) opts.signal.addEventListener('abort',
+        () => reject(new DOMException('aborted', 'AbortError')));
+    });
+    return Promise.resolve(new Response(JSON.stringify(next.body === undefined ? {} : next.body), {
+      status: next.status || 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  };
+  fn.calls = calls;
+  return fn;
+}
+const NET_SESSION = { access: 'tok-a', refresh: 'ref-a', userId: 'u1' };
+
+test('signInAnon posts to /auth/v1/signup and stores the session', async () => {
+  const sessions = [];
+  const ff = makeFakeFetch([
+    { body: { access_token: 'tok-1', refresh_token: 'ref-1', user: { id: 'u9' } } },
+  ]);
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon', fetchFn: ff,
+    onSession: (s) => sessions.push(s) });
+  const r = await c.signInAnon();
+  assertEq(r.ok, true);
+  assertEq(r.session, { access: 'tok-1', refresh: 'ref-1', userId: 'u9' });
+  assertEq(c.getSession(), r.session);
+  assertEq(sessions.length, 1);
+  assertEq(ff.calls[0].url, 'https://x.supabase.co/auth/v1/signup');
+  assertEq(ff.calls[0].method, 'POST');
+  assertEq(ff.calls[0].headers.apikey, 'anon');
+});
+test('createCircle sends snake_case rpc params, returns camelCase', async () => {
+  const ff = makeFakeFetch([
+    { body: { circle: { id: 'c1', name: 'Us', invite_code: 'ABC234' }, member_id: 'me' } },
+  ]);
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon',
+    fetchFn: ff, session: { ...NET_SESSION } });
+  const r = await c.createCircle({ circleName: 'Us', memberName: 'Anu', avatarId: '0', accentId: '1' });
+  assertEq(r.ok, true);
+  assertEq(r.circle, { id: 'c1', name: 'Us', inviteCode: 'ABC234' });
+  assertEq(r.memberId, 'me');
+  assertEq(ff.calls[0].url, 'https://x.supabase.co/rest/v1/rpc/create_circle');
+  assertEq(ff.calls[0].headers.Authorization, 'Bearer tok-a');
+  assertEq(ff.calls[0].body, { circle_name: 'Us', member_name: 'Anu', avatar: '0', accent: '1' });
+});
+test('pushEvents stamps rows and asks for duplicate tolerance', async () => {
+  const ff = makeFakeFetch([{ status: 201, body: [] }]);
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon',
+    fetchFn: ff, session: { ...NET_SESSION } });
+  const r = await c.pushEvents('c1', 'me', [{ client_key: 'k1', type: 'step', payload: {} }]);
+  assertEq(r.ok, true);
+  assertEq(r.pushed, 1);
+  assert(ff.calls[0].url.endsWith('/rest/v1/events?on_conflict=circle_id,client_key'),
+    'on_conflict param present');
+  assertEq(ff.calls[0].headers.Prefer, 'resolution=ignore-duplicates,return=minimal');
+  assertEq(ff.calls[0].body[0].circle_id, 'c1');
+  assertEq(ff.calls[0].body[0].member_id, 'me');
+});
+test('pullEvents advances the cursor only when rows arrive', async () => {
+  const ff = makeFakeFetch([
+    { body: [{ id: 41 }, { id: 42 }] },
+    { body: [] },
+  ]);
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon',
+    fetchFn: ff, session: { ...NET_SESSION } });
+  const r1 = await c.pullEvents('c1', 40);
+  assertEq(r1.cursor, 42);
+  assertEq(r1.events.length, 2);
+  const r2 = await c.pullEvents('c1', 42);
+  assertEq(r2.cursor, 42, 'cursor unchanged on empty pull');
+  assert(ff.calls[0].url.includes('circle_id=eq.c1') && ff.calls[0].url.includes('id=gt.40')
+    && ff.calls[0].url.includes('order=id.asc'), 'pull query shape');
+});
+test('a 401 triggers one refresh and one retry', async () => {
+  const sessions = [];
+  const ff = makeFakeFetch([
+    { status: 401, body: { message: 'jwt expired' } },
+    { body: { access_token: 'tok-2', refresh_token: 'ref-2', user: { id: 'u1' } } },
+    { body: [] },
+  ]);
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon', fetchFn: ff,
+    session: { ...NET_SESSION }, onSession: (s) => sessions.push(s) });
+  const r = await c.pullEvents('c1', 0);
+  assertEq(r.ok, true);
+  assertEq(ff.calls.length, 3);
+  assert(ff.calls[1].url.includes('grant_type=refresh_token'), 'refresh call made');
+  assertEq(ff.calls[1].body, { refresh_token: 'ref-a' });
+  assertEq(ff.calls[2].headers.Authorization, 'Bearer tok-2', 'retry uses new token');
+  assertEq(sessions[0].refresh, 'ref-2', 'rotated refresh token stored');
+});
+test('rpc errors map to friendly codes', async () => {
+  const ff = makeFakeFetch([{ status: 400, body: { message: 'full' } }]);
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon',
+    fetchFn: ff, session: { ...NET_SESSION } });
+  const r = await c.joinCircle({ code: 'ABC234', memberName: 'Anu', avatarId: '0', accentId: '0' });
+  assertEq(r.ok, false);
+  assertEq(r.error, 'full');
+});
+test('network failures and timeouts resolve offline, never throw', async () => {
+  const ff = makeFakeFetch([{ reject: true }]);
+  const c = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon',
+    fetchFn: ff, session: { ...NET_SESSION } });
+  const r = await c.fetchMembers('c1');
+  assertEq(r.ok, false);
+  assertEq(r.offline, true);
+  const ff2 = makeFakeFetch([{ hang: true }]);
+  const c2 = Net.makeClient({ url: 'https://x.supabase.co', anonKey: 'anon',
+    fetchFn: ff2, session: { ...NET_SESSION }, timeoutMs: 50 });
+  const r2 = await c2.pullEvents('c1', 0);
+  assertEq(r2.ok, false);
+  assertEq(r2.offline, true);
+});
+
 // ---------- circle simulation ----------
 function simState(lastVisitTs) {
   const st = S.defaultState(lastVisitTs);
@@ -635,6 +760,18 @@ test('supporting a struggling member sparks a recovery crediting the player', ()
 });
 
 // ---------- summary ----------
-console.log(`\n${passed} passed, ${failed} failed`);
-for (const f of failures) console.log(`  FAIL ${f.name}: ${f.message}`);
-process.exit(failed ? 1 : 0);
+(async () => {
+  // Ref'd watchdog: a hung async test must fail loudly, not drain the event
+  // loop into a silent exit-0.
+  const watchdog = setTimeout(() => {
+    console.log('TIMEOUT: test suite hung — a test never settled');
+    process.exit(1);
+  }, 120000);
+  for (const t of queue) {
+    try { await t.fn(); passed++; }
+    catch (e) { failed++; failures.push({ name: t.name, message: e.message }); }
+  }
+  console.log(`\n${passed} passed, ${failed} failed`);
+  for (const f of failures) console.log(`  FAIL ${f.name}: ${f.message}`);
+  process.exit(failed ? 1 : 0);
+})();
