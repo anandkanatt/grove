@@ -145,13 +145,16 @@ GroveWhisper.speak = function (text, preferredName) {
 
 // Dictation with the full failure story: some browsers deny the mic
 // ('not-allowed'), some can't reach their speech service ('network'), and
-// some expose the API but never fire a single event — the watchdog catches
-// that last kind so the UI can never get stuck "listening".
+// some — Opera, headless builds — expose the API but never fire a single
+// event. Two watchdogs: a fast pre-start one catches the zombie API in ~3s
+// (so a fallback can take over quickly), and a longer post-start one turns
+// endless silence into 'no-speech'. The UI can never get stuck "listening".
 GroveWhisper.makeDictation = function (handlers, opts) {
   const Ctor = recognitionCtor();
   if (!Ctor) return null;
   const h = handlers || {};
-  const watchdogMs = (opts && opts.watchdogMs) || 8000;
+  const watchdogMs = (opts && opts.watchdogMs) || 3000;   // until onstart
+  const resultMs = (opts && opts.resultMs) || 12000;      // after onstart
   const rec = new Ctor();
   rec.continuous = false;
   rec.interimResults = false;
@@ -163,6 +166,15 @@ GroveWhisper.makeDictation = function (handlers, opts) {
   function clearWatchdog() {
     if (watchdog) { clearTimeout(watchdog); watchdog = null; }
   }
+  function armWatchdog(ms, kind) {
+    clearWatchdog();
+    watchdog = setTimeout(function () {
+      if (settled || ended) return;
+      try { rec.stop(); } catch (e) { /* not listening */ }
+      if (h.onError) h.onError(kind);
+      notifyEnd();
+    }, ms);
+  }
   function notifyEnd() {
     clearWatchdog();
     if (ended) return;
@@ -170,7 +182,10 @@ GroveWhisper.makeDictation = function (handlers, opts) {
     if (h.onEnd) h.onEnd();
   }
 
-  rec.onstart = function () { if (h.onStart) h.onStart(); };
+  rec.onstart = function () {
+    armWatchdog(resultMs, 'no-speech'); // the API is alive; now wait for words
+    if (h.onStart) h.onStart();
+  };
   rec.onresult = function (ev) {
     settled = true;
     clearWatchdog();
@@ -188,16 +203,83 @@ GroveWhisper.makeDictation = function (handlers, opts) {
 
   return {
     start() {
-      clearWatchdog();
-      watchdog = setTimeout(function () {
-        if (settled || ended) return;
-        try { rec.stop(); } catch (e) { /* not listening */ }
-        if (h.onError) h.onError('no-response');
-        notifyEnd();
-      }, watchdogMs);
+      armWatchdog(watchdogMs, 'no-response');
       try { rec.start(); } catch (e) { /* already listening */ }
     },
     stop() { try { rec.stop(); } catch (e) { /* not listening */ } },
+  };
+};
+
+// ---------- recorded dictation (for browsers whose recognition is a zombie) ----------
+
+const AUDIO_MIMES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+
+GroveWhisper.pickAudioMime = function (isSupported) {
+  for (const t of AUDIO_MIMES) {
+    if (isSupported(t)) return t;
+  }
+  return null;
+};
+
+GroveWhisper.recorderAvailable = function () {
+  return typeof window !== 'undefined'
+    && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+    && typeof MediaRecorder !== 'undefined'
+    && !!GroveWhisper.pickAudioMime(t => MediaRecorder.isTypeSupported(t));
+};
+
+// Records mic audio and hands back a base64 blob for the grove's own
+// transcriber. Same handler shape as makeDictation, plus onBlob.
+GroveWhisper.makeRecorder = function (handlers, opts) {
+  if (!GroveWhisper.recorderAvailable()) return null;
+  const h = handlers || {};
+  const maxMs = (opts && opts.maxMs) || 30000;
+  const mime = GroveWhisper.pickAudioMime(t => MediaRecorder.isTypeSupported(t));
+  let rec = null, stream = null, cap = null, ended = false;
+
+  function cleanup() {
+    if (cap) { clearTimeout(cap); cap = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  }
+  function notifyEnd() {
+    cleanup();
+    if (ended) return;
+    ended = true;
+    if (h.onEnd) h.onEnd();
+  }
+
+  return {
+    kind: 'recorder',
+    start() {
+      navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
+        stream = s;
+        const chunks = [];
+        rec = new MediaRecorder(s, { mimeType: mime });
+        rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+        rec.onstop = () => {
+          const blob = new Blob(chunks, { type: mime });
+          if (!blob.size) { if (h.onError) h.onError('no-speech'); notifyEnd(); return; }
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = String(reader.result).split(',')[1] || '';
+            if (h.onBlob) h.onBlob(base64, mime.split(';')[0]);
+            notifyEnd();
+          };
+          reader.onerror = () => { if (h.onError) h.onError('unknown'); notifyEnd(); };
+          reader.readAsDataURL(blob);
+        };
+        rec.start();
+        cap = setTimeout(() => { try { rec.stop(); } catch (e) { /* idle */ } }, maxMs);
+        if (h.onStart) h.onStart();
+      }).catch((e) => {
+        if (h.onError) h.onError(e && e.name === 'NotAllowedError' ? 'not-allowed' : 'audio-capture');
+        notifyEnd();
+      });
+    },
+    stop() {
+      if (rec && rec.state === 'recording') { try { rec.stop(); } catch (e) { /* idle */ } }
+      else notifyEnd();
+    },
   };
 };
 

@@ -11,6 +11,7 @@ import {
   stepsPrompt, cheerPrompt, repliesPrompt, insightsPrompt,
   SENTIMENT_LABELS, STALLED_DAYS, STRUGGLE_UNSUPPORTED_HOURS, NUDGE_COOLDOWN_DAYS,
   DAY_MS, pickNudge, memberLastSeen, buildOverview, buildInterventions,
+  GOAL_DOMAINS, GOAL_IDEAS_SCHEMA, goalIdeasPrompt, transcribePrompt,
 } from './grove';
 
 // The grove keeper's gate — explicit, real admin emails only.
@@ -320,6 +321,65 @@ export const handler = router({
       return json({ steps: steps.slice(0, 10) });
     } catch (err) {
       console.error('ai steps failed', err);
+      return error('ai-unavailable', 502);
+    }
+  }],
+
+  // Goal discovery — three plantable ideas from whatever is on her mind.
+  // Counts against the per-member coach budget, like step drafting.
+  'POST /api/ai/goal-ideas': [async (ctx) => {
+    const guard = await aiGuard(ctx, true);
+    if (guard) return guard;
+    const b = ctx.body as any;
+    const seed = clamp(b?.seed, 240);
+    if (!seed) return error('empty-seed', 400);
+    try {
+      const r = await generate({
+        prompt: goalIdeasPrompt(seed, clamp(b?.domain, 20)),
+        schema: GOAL_IDEAS_SCHEMA,
+      });
+      const parsed = JSON.parse(r.text);
+      const ideas = (parsed.ideas || [])
+        .map((i: any) => ({
+          name: oneLine(String(i?.name ?? ''), 45),
+          domain: GOAL_DOMAINS.indexOf(i?.domain) !== -1 ? i.domain : 'wellbeing',
+          why: oneLine(String(i?.why ?? ''), 90),
+        }))
+        .filter((i: any) => i.name);
+      if (ideas.length < 3) return error('ai-unavailable', 502);
+      return json({ ideas: ideas.slice(0, 3) });
+    } catch (err) {
+      console.error('ai goal-ideas failed', err);
+      return error('ai-unavailable', 502);
+    }
+  }],
+
+  // Voice-note transcription for browsers whose speech recognition is a
+  // zombie (Opera). Audio goes to the platform AI and only text returns;
+  // nothing is stored.
+  'POST /api/ai/transcribe': [async (ctx) => {
+    const guard = await aiGuard(ctx, false);
+    if (guard) return guard;
+    const b = ctx.body as any;
+    const audio = typeof b?.audio === 'string' ? b.audio : '';
+    const mimeType = clamp(b?.mimeType, 40);
+    // ~2MB decoded is the platform's per-audio cap; base64 is 4/3 of that.
+    if (!audio || audio.length > 2800000) return error('bad-audio', 400);
+    if (mimeType.indexOf('audio/') !== 0) return error('bad-audio', 400);
+    try {
+      const r = await ai.generate({
+        system: 'You are a precise transcription engine.',
+        prompt: transcribePrompt(),
+        audios: [{ data: audio, mimeType }],
+        maxTokens: 400,
+        temperature: 0,
+        thinkingMode: 'NONE',
+      });
+      const text = clamp(r.text, 600).replace(/\s+/g, ' ').trim();
+      if (!text) return error('no-speech', 422);
+      return json({ text });
+    } catch (err) {
+      console.error('ai transcribe failed', err);
       return error('ai-unavailable', 502);
     }
   }],

@@ -1322,17 +1322,19 @@ test('dictation delivers transcribed text then ends cleanly', () => {
   assertEq(got.errors, []);
   assertEq(got.ends, 1);
 });
-test('a dead recognition session trips the watchdog', async () => {
-  Whisper._setRecognitionCtor(FakeRec);
+test('a started-but-silent session trips the result watchdog as no-speech', async () => {
+  Whisper._setRecognitionCtor(FakeRec); // fires onstart, then nothing
   const got = { errors: [], ends: 0 };
   const s = Whisper.makeDictation({
     onError: (e) => got.errors.push(e),
     onEnd: () => got.ends += 1,
-  }, { watchdogMs: 25 });
+  }, { watchdogMs: 20, resultMs: 45 });
   s.start();
-  await new Promise(r => setTimeout(r, 70));
+  await new Promise(r => setTimeout(r, 30));
+  assertEq(got.errors, [], 'onstart cleared the pre-start watchdog');
+  await new Promise(r => setTimeout(r, 60));
   Whisper._setRecognitionCtor(null);
-  assertEq(got.errors, ['no-response'], 'watchdog error reported');
+  assertEq(got.errors, ['no-speech'], 'silence after start becomes no-speech');
   assertEq(got.ends, 1, 'session ended exactly once');
   assert(FakeRec.last.stopped >= 1, 'recognition stop attempted');
 });
@@ -1366,6 +1368,36 @@ test('state v4 carries a voice preference and migrates older saves', () => {
   const m = S.migrate(old);
   assertEq(m.version, 5);
   assertEq(m.voice.name, null);
+});
+
+// ---------- voice: audio mime picking + staged watchdogs ----------
+test('pickAudioMime prefers opus-webm and degrades gracefully', () => {
+  const only = (ok) => (t) => ok.includes(t);
+  assertEq(Whisper.pickAudioMime(only(['audio/webm;codecs=opus', 'audio/webm'])), 'audio/webm;codecs=opus');
+  assertEq(Whisper.pickAudioMime(only(['audio/webm'])), 'audio/webm');
+  assertEq(Whisper.pickAudioMime(only(['audio/mp4'])), 'audio/mp4');
+  assertEq(Whisper.pickAudioMime(only([])), null);
+});
+
+function FakeDeadRec() { // the Opera case: constructor exists, zero events ever
+  FakeDeadRec.last = this;
+  this.started = 0; this.stopped = 0;
+  this.start = () => { this.started += 1; };
+  this.stop = () => { this.stopped += 1; };
+}
+
+test('a never-starting recognition trips the fast pre-start watchdog', async () => {
+  Whisper._setRecognitionCtor(FakeDeadRec);
+  const got = { errors: [], ends: 0 };
+  const s = Whisper.makeDictation({
+    onError: (e) => got.errors.push(e),
+    onEnd: () => got.ends += 1,
+  }, { watchdogMs: 20, resultMs: 200 });
+  s.start();
+  await new Promise(r => setTimeout(r, 60));
+  Whisper._setRecognitionCtor(null);
+  assertEq(got.errors, ['no-response'], 'dead API detected before resultMs');
+  assertEq(got.ends, 1);
 });
 
 // ---------- phase 4: state v5, claim triggers, backups ----------
