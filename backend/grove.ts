@@ -250,7 +250,10 @@ export function buildInterventions(input: {
 }) {
   const { circles, members, events, usage, now } = input;
   const last = lastEventByMember(events);
-  const circleName = (id: string) => (circles.find(c => c.id === id) || {}).name || 'a circle';
+  const circleName = (id: string) => {
+    const c = circles.find(x => x.id === id);
+    return (c && c.name) || 'a circle';
+  };
 
   const stalled = members
     .map(m => ({ m, seen: memberLastSeen(m, last) }))
