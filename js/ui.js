@@ -192,10 +192,24 @@ const GroveUI = {};
       }).join('');
     }
 
+    // A gentle, dismissible ask at moments of real investment — platform only.
+    const claimTrigger = window.GrovePlatform ? L.claimTrigger(st) : null;
+    const claimCard = claimTrigger ? `
+      <div class="card claim-card">
+        <div class="section-title"><h2>Your grove is growing 🌿</h2></div>
+        <p class="sub" style="margin:6px 0 12px">Claim it, so it can follow you to any device —
+          and stay safe if this browser ever forgets.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn accent" data-action="account-claim" data-trigger="${esc(claimTrigger)}">Claim my grove ✨</button>
+          <button class="btn secondary" data-action="account-later" data-trigger="${esc(claimTrigger)}">not now</button>
+        </div>
+      </div>` : '';
+
     maybeFetchDailyWhisper();
     view.innerHTML = `
       <div class="affirmation">“${esc(affirmationOfTheDay())}”${Whisper().speakAvailable()
         ? ` <button class="voice-btn" data-action="voice-speak" title="Hear it" aria-label="Read the affirmation aloud">🔈</button>` : ''}</div>
+      ${claimCard}
       <div class="card">
         <div class="section-title">
           <h2>Hello${name} 🌤️</h2>
@@ -529,6 +543,21 @@ const GroveUI = {};
           </select>
           <button class="btn small secondary" data-action="voice-try">🔈 try</button>
         </div>` : ''}
+        ${window.GrovePlatform ? `
+        <div class="settings-row" style="margin-top:10px">
+          ${st.account && st.account.userId
+            ? `<span class="sub">Grove claimed ✨ <b>${esc(st.account.email || 'signed in')}</b>${st.account.lastBackupDay ? ` · backed up ${esc(st.account.lastBackupDay)}` : ''}</span>
+               <button class="btn small secondary" data-action="account-backup-now">Back up now</button>
+               <button class="btn small secondary" data-action="account-restore">Restore</button>`
+            : `<span class="sub">Your grove lives only in this browser.</span>
+               <button class="btn small accent" data-action="account-claim" data-trigger="settings">Claim my grove ✨</button>`}
+        </div>
+        ${st.account && st.account.userId ? `
+        <label class="privacy-row"><input type="checkbox" id="backup-private" ${st.account.backupPrivateGoals ? 'checked' : ''}>
+          🌙 include private goals in backups</label>` : ''}
+        ${realCircle() ? `
+        <label class="privacy-row"><input type="checkbox" id="quiet-toggle" ${st.quiet ? 'checked' : ''}>
+          🤫 quiet mode — no notes from the grove keeper</label>` : ''}` : ''}
       </div>`;
   }
 
@@ -916,6 +945,75 @@ const GroveUI = {};
     renderAll();
   }
 
+  // ---------- claiming the grove (progressive accounts) ----------
+  async function handleClaim(trigger) {
+    const auth = flows() && flows().auth;
+    if (!auth) { toast('Accounts live on the platform version 🌿'); return; }
+    try {
+      const r = await auth.signIn();
+      const st = ctx.state;
+      st.account.userId = r.user.userId;
+      st.account.email = r.user.email || null;
+      st.account.linkedAt = Date.now();
+      st.accountPrompt.claimed = true;
+      if (realCircle()) await flows().linkAccount();
+      const push = await flows().backupPush(S.backupBlob(st, !!st.account.backupPrivateGoals));
+      if (push.ok) st.account.lastBackupDay = L.dayKey(Date.now());
+      ctx.save();
+      toast('Your grove is claimed — it can follow you anywhere now ✨', 'rose');
+      renderAll();
+    } catch (e) {
+      if (e && e.code === 'popup_blocked') toast('Your browser blocked the sign-in window — allow popups and try again.');
+      else if (e && e.code === 'popup_closed') toast('No rush — claim your grove any time from More 🌿');
+      else toast('Sign-in hiccuped — try again in a moment 🌿');
+    }
+  }
+
+  function handleClaimLater(trigger) {
+    const st = ctx.state;
+    if (!st.accountPrompt.shown) st.accountPrompt.shown = {};
+    st.accountPrompt.shown[trigger] = true;
+    ctx.save();
+    renderView('today');
+  }
+
+  async function handleBackupNow() {
+    const auth = flows() && flows().auth;
+    const st = ctx.state;
+    if (!auth || !auth.isSignedIn()) { toast('Sign in first — tap “Claim my grove” 🌿'); return; }
+    const r = await flows().backupPush(S.backupBlob(st, !!st.account.backupPrivateGoals));
+    if (r.ok) {
+      st.account.lastBackupDay = L.dayKey(Date.now());
+      ctx.save();
+      toast('Backed up — your garden is safe ⬆️🌿', 'rose');
+      renderView('more');
+    } else {
+      toast('Backup could not reach the grove — try again soon.');
+    }
+  }
+
+  async function handleRestore() {
+    const auth = flows() && flows().auth;
+    if (!auth || !auth.isSignedIn()) { toast('Sign in first — tap “Claim my grove” 🌿'); return; }
+    if (!window.confirm('Replace this browser’s garden with your cloud backup?')) return;
+    const r = await flows().backupPull();
+    if (!r.ok) {
+      toast(r.error === 'not-found' || r.error === 'http-404'
+        ? 'No backup found yet — make one with “Back up now”.'
+        : 'Could not reach your backup — try again soon.');
+      return;
+    }
+    try {
+      const restored = S.importJson(r.blob);
+      ctx.replaceState(restored);
+      applyAccent();
+      toast('Garden restored from your account 🌿', 'rose');
+      renderAll();
+    } catch (e) {
+      toast('That backup could not be read, sorry.');
+    }
+  }
+
   // ---------- the whisperer (AI, consent-gated) ----------
   function withConsent(fn) {
     if (Whisper().consentGranted(ctx.state)) { fn(); return; }
@@ -1197,6 +1295,10 @@ const GroveUI = {};
     else if (a === 'whisper-reply-send') sendCheerWithText(btn.dataset.member, btn.dataset.event, btn.dataset.text);
     else if (a === 'whisper-personal') handleWhisperPersonal(btn.dataset.member, btn.dataset.event, btn.dataset.name);
     else if (a === 'whisper-insights') handleWhisperInsights();
+    else if (a === 'account-claim') handleClaim(btn.dataset.trigger || 'settings');
+    else if (a === 'account-later') handleClaimLater(btn.dataset.trigger || 'settings');
+    else if (a === 'account-backup-now') handleBackupNow();
+    else if (a === 'account-restore') handleRestore();
     else if (a === 'voice-speak') Whisper().speak(affirmationOfTheDay(), (ctx.state.voice || {}).name);
     else if (a === 'voice-try') Whisper().speak('Hello! Your garden is glad you are here.', (ctx.state.voice || {}).name);
     else if (a === 'voice-dictate') handleDictate(btn.dataset.target, btn);
@@ -1221,6 +1323,21 @@ const GroveUI = {};
       ctx.state.voice.name = ev.target.value || null;
       ctx.save();
       Whisper().speak('Like this.', ctx.state.voice.name);
+    }
+    if (ev.target.id === 'backup-private') {
+      ctx.state.account.backupPrivateGoals = ev.target.checked;
+      ctx.save();
+      toast(ev.target.checked
+        ? '🌙 Private goals will ride along in your backups.'
+        : '🌙 Private goals stay on this device only.');
+    }
+    if (ev.target.id === 'quiet-toggle') {
+      ctx.state.quiet = ev.target.checked;
+      ctx.save();
+      if (flows()) flows().setQuiet(ev.target.checked);
+      toast(ev.target.checked
+        ? '🤫 Quiet mode on — the keeper will not write.'
+        : '🌿 The keeper may leave you a note again.');
     }
   }
 

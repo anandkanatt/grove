@@ -14,6 +14,18 @@
     S = window.GroveState, UI = window.GroveUI, Social = window.GroveSocial,
     Net = window.GroveNet, Sync = window.GroveSync;
 
+  // The keeper's dashboard takes over the whole page — the game never boots.
+  if (location.hash === '#admin') {
+    const adminClient = window.GrovePlatform
+      ? window.GroveNetAppDeploy.makeClient({
+          platform: window.GrovePlatform, session: null,
+          circleRef: () => null, onSession() {},
+        })
+      : null;
+    window.GroveAdmin.boot(adminClient);
+    return;
+  }
+
   let state = S.load();
   const now = Date.now();
   if (!state) {
@@ -149,6 +161,12 @@
       return client ? client.buildInviteLink(code) : ('#join=' + code);
     },
     get ai() { return client ? client.ai : null; },
+    get auth() { return client ? client.auth : null; },
+    async linkAccount() { return client ? client.linkAccount() : { ok: false, error: 'offline' }; },
+    async backupPush(blob) { return client ? client.backupPush(blob) : { ok: false, error: 'offline' }; },
+    async backupPull() { return client ? client.backupPull() : { ok: false, error: 'offline' }; },
+    async setQuiet(q) { return client ? client.setQuiet(q) : { ok: false, error: 'offline' }; },
+    async pullNudges() { return client ? client.pullNudges() : { ok: true, notes: [] }; },
     async leaveCircleFlow() {
       if (!client || !state.net.circle) return { ok: false, error: 'offline' };
       const rc = state.net.circle;
@@ -218,6 +236,7 @@
   state.lastVisit = now;
   S.save(state);
   UI.renderAll();
+  maybeKeeperRound();
 
   const joinCode = pendingJoinCode();
   if (joinCode && netAvailable()) {
@@ -230,6 +249,31 @@
     UI.toast(UI.comebackLine(), 'rose');
   } else if (events.length > 0) {
     UI.toast(`🍃 Your circle was busy while you were away — ${events.length} update${events.length > 1 ? 's' : ''} in the feed.`);
+  }
+
+  // Keeper notes waiting for her, and the once-a-day cloud backup.
+  async function maybeKeeperRound() {
+    if (!client) return;
+    try {
+      if (state.net.circle) {
+        const r = await client.pullNudges();
+        if (r.ok) {
+          for (const n of (r.notes || []).slice(0, 3)) {
+            const safe = String(n.text || '').replace(/[<>&]/g, '');
+            UI.toast('🌿 A note from the grove keeper: “' + safe + '”', 'rose');
+          }
+        }
+      }
+      const acct = state.account || {};
+      if (acct.userId && client.auth && client.auth.isSignedIn()
+          && acct.lastBackupDay !== L.dayKey(Date.now())) {
+        const r = await client.backupPush(S.backupBlob(state, !!acct.backupPrivateGoals));
+        if (r.ok) {
+          state.account.lastBackupDay = L.dayKey(Date.now());
+          S.save(state);
+        }
+      }
+    } catch (e) { /* the keeper never blocks play */ }
   }
   } // end boot
 })();

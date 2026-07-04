@@ -111,3 +111,25 @@ Steps:
 3. Tap "Ask for a boost 💛"
 
 Expected: The boost composer dialog is fully visible with its textarea and "Send to my circle" button reachable, and the page does not scroll horizontally.
+
+## Test 9 - Claiming the grove is offered after the first bloom
+Viewport: desktop
+Description: After her first goal blooms, a gentle account prompt appears on Today; "not now" dismisses it and it stays dismissed after reload.
+
+Steps:
+1. Open the app and complete onboarding: pick "My own goal", name it "Tiny win", remove the third step so only two steps remain, and plant it
+2. On Today, complete both steps (close the bloom celebration dialog when it appears, skipping the reflection)
+3. Look at the Today view
+4. Click "not now" on the claim card
+5. Reload the page and open Today
+
+Expected: After the bloom, Today shows a card titled "Your grove is growing" with a "Claim my grove" button and a "not now" button; after clicking "not now" and reloading, the card does not reappear.
+
+## Test 10 - The keeper's gate stays locked without sign-in
+Viewport: desktop
+Description: Opening the admin dashboard route without signing in shows a locked gate, never data.
+
+Steps:
+1. Open the app URL with #admin appended to it (for example https://<app-host>/#admin) and wait for load
+
+Expected: A screen titled "The Grove Keeper's Gate" is visible with a "Sign in" button, and no dashboard statistics or member names are shown.
