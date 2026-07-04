@@ -138,6 +138,57 @@ GroveNetAppDeploy.makeClient = function (cfg) {
       boostReplies: (p) => aiPost('/api/ai/boost-replies', p),
       insights: (p) => aiPost('/api/ai/insights', p),
     },
+
+    // ---------- phase 4: accounts, keeper notes, admin ----------
+    // api.* auto-attaches the Bearer token once platform auth has signed in.
+
+    auth: platform.auth || null,
+
+    async linkAccount() {
+      const ref = circleRef();
+      if (!ref || !memberKey()) return { ok: false, error: 'no-circle' };
+      const r = await post('/api/account/link', {
+        circleId: ref.id, memberId: ref.memberId, memberKey: memberKey(),
+      });
+      return r.ok ? { ok: true } : r;
+    },
+
+    async backupPush(blob) {
+      const r = await post('/api/account/backup', { blob });
+      return r.ok ? { ok: true, updatedAt: r.data.updatedAt } : r;
+    },
+
+    async backupPull() {
+      const r = await get('/api/account/backup');
+      return r.ok ? { ok: true, blob: r.data.blob, updatedAt: r.data.updatedAt } : r;
+    },
+
+    async setQuiet(quiet) {
+      const ref = circleRef();
+      if (!ref || !memberKey()) return { ok: false, error: 'no-circle' };
+      return post('/api/circles/' + ref.id + '/quiet', {
+        memberId: ref.memberId, memberKey: memberKey(), quiet: !!quiet,
+      });
+    },
+
+    async pullNudges() {
+      const ref = circleRef();
+      if (!ref || !memberKey()) return { ok: true, notes: [] };
+      const r = await get('/api/circles/' + ref.id + '/nudges?' + identityQuery());
+      return r.ok ? { ok: true, notes: r.data.notes || [] } : r;
+    },
+
+    admin: {
+      overview: async () => {
+        const r = await get('/api/admin/overview');
+        return r.ok ? { ok: true, data: r.data } : r;
+      },
+      interventions: async () => {
+        const r = await get('/api/admin/interventions');
+        return r.ok ? { ok: true, data: r.data } : r;
+      },
+      nudge: async (memberId, text) => post('/api/admin/nudge', { memberId, text }),
+    },
   };
 };
 

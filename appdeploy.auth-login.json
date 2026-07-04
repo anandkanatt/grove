@@ -1,0 +1,12 @@
+{
+  "headline": "Claim your grove",
+  "subtitle": "One sign-in keeps your garden safe and lets it follow you anywhere.",
+  "style": {
+    "mode": "light",
+    "accentColor": "#c66b8e",
+    "backgroundColor": "#faf6ef",
+    "panelColor": "#fffdf8",
+    "textColor": "#33402f",
+    "borderRadius": 16
+  }
+}
