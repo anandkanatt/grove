@@ -1,0 +1,8 @@
+[
+  {
+    "name": "grove-keeper-daily",
+    "cron": "30 2 * * *",
+    "handler": "groveKeeperDaily",
+    "timezone": "Asia/Kolkata"
+  }
+]

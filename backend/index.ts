@@ -1,12 +1,20 @@
 // Grove backend — circles, members, an append-only event log, and the
 // Whisperer AI routes. Anonymous identity: creating/joining mints a memberKey
 // (returned once, held on-device); every write presents memberId + memberKey.
-import { router, json, error, db, invites, isInviteError, ai } from '@appdeploy/sdk';
+import {
+  router, json, error, db, invites, isInviteError, ai,
+  requireAuth, requireAdminEmailAllowlist,
+} from '@appdeploy/sdk';
 import {
   GROVE_TONE, STEPS_SCHEMA, REPLIES_SCHEMA, HISTORY_CAP, MAX_REAL_MEMBERS,
   todayKey, clamp, capExceeded, validEvent, oneLine,
   stepsPrompt, cheerPrompt, repliesPrompt, insightsPrompt,
+  SENTIMENT_LABELS, STALLED_DAYS, STRUGGLE_UNSUPPORTED_HOURS, NUDGE_COOLDOWN_DAYS,
+  DAY_MS, pickNudge, memberLastSeen, buildOverview, buildInterventions,
 } from './grove';
+
+// The grove keeper's gate — explicit, real admin emails only.
+const ADMIN_EMAILS = ['anandkanatt@gmail.com'];
 
 // ---------- data access ----------
 
@@ -218,6 +226,85 @@ export const handler = router({
 
   // ---------- the whisperer ----------
 
+  // ---------- accounts & backups (phase 4) ----------
+
+  'POST /api/account/link': [requireAuth(), async (ctx) => {
+    const b = ctx.body as any;
+    const member = await getMember(b?.circleId, b?.memberId, b?.memberKey);
+    if (!member) return error('unauthorized', 401);
+    await db.update('members', [{ id: member.id, record: { ...member, id: undefined, userId: ctx.user!.userId } }]);
+    return json({ ok: true });
+  }],
+
+  'POST /api/account/backup': [requireAuth(), async (ctx) => {
+    const b = ctx.body as any;
+    const blob = typeof b?.blob === 'string' ? b.blob : '';
+    if (!blob || blob.length > 200000) return error('bad-backup', 400);
+    const rows = await listAll('backups', { userId: ctx.user!.userId });
+    const record = { userId: ctx.user!.userId, blob, updatedAt: Date.now() };
+    if (rows[0]) await db.update('backups', [{ id: rows[0].id, record }]);
+    else await db.add('backups', [record]);
+    return json({ ok: true, updatedAt: record.updatedAt });
+  }],
+
+  'GET /api/account/backup': [requireAuth(), async (ctx) => {
+    const rows = await listAll('backups', { userId: ctx.user!.userId });
+    if (!rows[0]) return error('not-found', 404);
+    return json({ blob: rows[0].blob, updatedAt: rows[0].updatedAt });
+  }],
+
+  'POST /api/circles/:id/quiet': [async (ctx) => {
+    const b = ctx.body as any;
+    const member = await getMember(ctx.params.id, b?.memberId, b?.memberKey);
+    if (!member) return error('unauthorized', 401);
+    await db.update('members', [{ id: member.id, record: { ...member, id: undefined, quiet: !!b?.quiet } }]);
+    return json({ ok: true });
+  }],
+
+  // Undelivered keeper notes for this member; delivery is marked immediately.
+  'GET /api/circles/:id/nudges': [async (ctx) => {
+    const member = await getMember(ctx.params.id, ctx.query.memberId, ctx.query.memberKey);
+    if (!member) return error('unauthorized', 401);
+    const rows = await listAll('nudges', { memberId: member.id });
+    const mine = rows.filter(n => !n.deliveredAt);
+    for (const n of mine) {
+      await db.update('nudges', [{ id: n.id, record: { ...n, id: undefined, deliveredAt: Date.now() } }]);
+    }
+    return json({ notes: mine.map(n => ({ id: n.id, text: n.text, createdAt: n.createdAt })) });
+  }],
+
+  // ---------- the grove keeper's dashboard (admin, aggregates only) ----------
+
+  'GET /api/admin/overview': [requireAuth(), requireAdminEmailAllowlist(ADMIN_EMAILS), async () => {
+    // Full scans are fine at grove scale: events are capped per circle and
+    // circles are tiny. Revisit with counters if this ever exceeds ~1k circles.
+    const [circles, members, events, usage, senti, nudges] = await Promise.all([
+      listAll('circles', {}), listAll('members', {}), listAll('events', {}),
+      listAll('aiUsage', {}), listAll('sentimentDaily', {}), listAll('nudges', {}),
+    ]);
+    return json(buildOverview({ circles, members, events, usage, senti, nudges, now: Date.now() }));
+  }],
+
+  'GET /api/admin/interventions': [requireAuth(), requireAdminEmailAllowlist(ADMIN_EMAILS), async () => {
+    const [circles, members, events, usage] = await Promise.all([
+      listAll('circles', {}), listAll('members', {}), listAll('events', {}), listAll('aiUsage', {}),
+    ]);
+    return json(buildInterventions({ circles, members, events, usage, now: Date.now() }));
+  }],
+
+  'POST /api/admin/nudge': [requireAuth(), requireAdminEmailAllowlist(ADMIN_EMAILS), async (ctx) => {
+    const b = ctx.body as any;
+    const text = oneLine(String(b?.text || ''), 240);
+    if (!text) return error('empty-note', 400);
+    const [member] = await db.get<Record<string, any>>('members', [String(b?.memberId || '')]);
+    if (!member) return error('not-found', 404);
+    await db.add('nudges', [{
+      circleId: member.circleId, memberId: String(b.memberId), text,
+      source: 'manual', day: todayKey(Date.now()), createdAt: Date.now(), deliveredAt: 0,
+    }]);
+    return json({ ok: true });
+  }],
+
   'POST /api/ai/steps': [async (ctx) => {
     const guard = await aiGuard(ctx, true);
     if (guard) return guard;
@@ -292,3 +379,91 @@ export const handler = router({
     }
   }],
 });
+
+// ---------- the grove keeper's daily round (cron) ----------
+// 1. Sentiment: classify the last two days' struggle posts into a small
+//    aggregate (labels only — raw text never reaches the dashboard).
+// 2. Workflow nudges: one warm note to stalled members (≥7 quiet days), and
+//    one to a circle-mate when a struggle has sat unsupported ≥48h.
+// Quiet-mode members are never nudged; everyone is capped to one workflow
+// note per week; every note lands as a logged nudges row.
+export const groveKeeperDaily = async (_event: unknown) => {
+  const now = Date.now();
+  const today = todayKey(now);
+  const [circles, members, events, nudges] = await Promise.all([
+    listAll('circles', {}), listAll('members', {}), listAll('events', {}), listAll('nudges', {}),
+  ]);
+
+  // -- sentiment --
+  try {
+    const existing = await listAll('sentimentDaily', { day: today });
+    if (!existing[0]) {
+      const since = now - 2 * DAY_MS;
+      const texts = events
+        .filter(e => e.type === 'struggle' && e.createdAt >= since && e.payload && e.payload.text)
+        .map(e => String(e.payload.text))
+        .slice(0, 20);
+      if (texts.length > 0) {
+        const counts: Record<string, number> = { upbeat: 0, steady: 0, strained: 0 };
+        let sampled = 0;
+        for (const t of texts) {
+          const r = await ai.classify({
+            prompt: 'Classify the emotional tone of this short post from a goals-support circle.',
+            content: t, labels: SENTIMENT_LABELS, thinkingMode: 'NONE', maxRetries: 1,
+          });
+          if (counts[r.label] != null) { counts[r.label] += 1; sampled += 1; }
+        }
+        if (sampled > 0) await db.add('sentimentDaily', [{ day: today, ...counts, sampled }]);
+      }
+    }
+  } catch (err) {
+    // AI resting (429) or hiccuping must never break the keeper's round.
+    console.warn('sentiment pass skipped', err);
+  }
+
+  // -- workflow nudges --
+  const lastSeen = new Map<string, number>();
+  for (const e of events) {
+    if ((lastSeen.get(e.memberId) ?? 0) < e.createdAt) lastSeen.set(e.memberId, e.createdAt);
+  }
+  const recentlyNudged = (memberId: string) => nudges.some(n =>
+    n.memberId === memberId && n.source === 'workflow'
+    && now - (n.createdAt ?? 0) < NUDGE_COOLDOWN_DAYS * DAY_MS);
+  const addNudge = async (memberId: string, circleId: string, text: string) => {
+    await db.add('nudges', [{
+      circleId, memberId, text, source: 'workflow',
+      day: today, createdAt: now, deliveredAt: 0,
+    }]);
+  };
+
+  let sent = 0;
+  for (const m of members) {
+    if (m.quiet) continue;
+    const seen = lastSeen.get(m.id) ?? m.joinedAt ?? 0;
+    if (now - seen < STALLED_DAYS * DAY_MS) continue;
+    if (recentlyNudged(m.id)) continue;
+    await addNudge(m.id, m.circleId, pickNudge('stalled', { name: m.name }, seen + m.id.length));
+    sent += 1;
+  }
+
+  for (const e of events) {
+    if (e.type !== 'struggle') continue;
+    const ageHours = (now - e.createdAt) / 3600000;
+    if (ageHours < STRUGGLE_UNSUPPORTED_HOURS || ageHours > 7 * 24) continue;
+    const supported = events.some(x => x.circleId === e.circleId && x.createdAt > e.createdAt
+      && (x.type === 'recover'
+        || (x.type === 'cheer' && x.payload && x.payload.toMemberId === e.memberId)));
+    if (supported) continue;
+    const struggler = members.find(x => x.id === e.memberId);
+    const mates = members.filter(x => x.circleId === e.circleId && x.id !== e.memberId
+      && !x.quiet && !recentlyNudged(x.id));
+    const mate = mates[0];
+    if (!mate || !struggler) continue;
+    await addNudge(mate.id, e.circleId,
+      pickNudge('struggle', { friend: struggler.name }, e.createdAt));
+    sent += 1;
+  }
+
+  console.log(`grove keeper round: ${sent} nudge(s), ${circles.length} circle(s)`);
+  return { statusCode: 200 };
+};

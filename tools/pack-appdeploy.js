@@ -16,6 +16,8 @@ const COPIES = [
   ['backend/index.ts', 'backend/index.ts'],
   ['tests/tests.txt', 'tests/tests.txt'],
   ['css/style.css', 'public/css/style.css'],
+  ['cron.json', 'cron.json'],
+  ['appdeploy.auth-login.json', 'appdeploy.auth-login.json'],
 ];
 
 fs.rmSync(DIST, { recursive: true, force: true });

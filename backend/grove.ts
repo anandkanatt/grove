@@ -116,3 +116,178 @@ export function insightsPrompt(payload: unknown): string {
     + 'shows up, what her reflections say about her, one gentle observation to carry '
     + 'forward. Speak to her directly. No bullet points.';
 }
+
+// ---------- phase 4: grove keeper (admin) helpers ----------
+
+export const SENTIMENT_LABELS = ['upbeat', 'steady', 'strained'];
+export const STALLED_DAYS = 7;
+export const STRUGGLE_UNSUPPORTED_HOURS = 48;
+export const NUDGE_COOLDOWN_DAYS = 7;
+export const DAY_MS = 86400000;
+
+// Warm, never-guilt nudge copy. {name} = recipient; {friend} = the struggling friend.
+export const NUDGE_TEMPLATES: Record<string, string[]> = {
+  stalled: [
+    'The grove kept your place, {name}. One tiny step is all a garden ever asks. 🌿',
+    'No catching up needed, {name} — just one small watering whenever you like. 🌱',
+    'Your plants are patient, {name}. A five-minute step still counts. 🌤️',
+    'Gardens rest too, {name}. When you are ready, the soil is warm. 🌻',
+  ],
+  struggle: [
+    '{friend} is having a heavy week. A little of your sunshine would mean a lot. ☀️',
+    'Your circle-mate {friend} could use a kind word today. 💛',
+    '{friend} posted that she is struggling — even one warm line helps. 🌈',
+  ],
+};
+
+export function pickNudge(kind: string, names: { name?: string; friend?: string }, seed: number): string {
+  const pool = NUDGE_TEMPLATES[kind] || NUDGE_TEMPLATES.stalled;
+  const line = pool[Math.abs(seed) % pool.length];
+  return line
+    .split('{name}').join(names.name || 'friend')
+    .split('{friend}').join(names.friend || 'a friend');
+}
+
+type Row = Record<string, any> & { id: string };
+
+function lastEventByMember(events: Row[]): Map<string, number> {
+  const last = new Map<string, number>();
+  for (const e of events) {
+    if ((last.get(e.memberId) ?? 0) < e.createdAt) last.set(e.memberId, e.createdAt);
+  }
+  return last;
+}
+
+// Activity is derived from the retained event log (joinedAt as fallback) —
+// no per-event member writes. History pruning caps each circle at 200 events,
+// so "quiet" here means "no retained activity", which is what the keeper
+// cares about anyway.
+export function memberLastSeen(m: Row, last: Map<string, number>): number {
+  return last.get(m.id) ?? m.joinedAt ?? 0;
+}
+
+export function buildOverview(input: {
+  circles: Row[]; members: Row[]; events: Row[];
+  usage: Row[]; senti: Row[]; nudges: Row[]; now: number;
+}) {
+  const { circles, members, events, usage, senti, nudges, now } = input;
+  const today = todayKey(now);
+  const last = lastEventByMember(events);
+
+  const days: Array<Record<string, any>> = [];
+  for (let i = 13; i >= 0; i--) {
+    const dayStart = now - i * DAY_MS;
+    days.push({ day: todayKey(dayStart), step: 0, bloom: 0, cheer: 0, struggle: 0, recover: 0, join: 0, leave: 0 });
+  }
+  const byDay = new Map(days.map(d => [d.day, d]));
+  const domains: Record<string, { steps: number; blooms: number }> = {};
+  for (const e of events) {
+    const bucket = byDay.get(todayKey(e.createdAt));
+    if (bucket && bucket[e.type] != null) bucket[e.type] += 1;
+    if (e.type === 'step' || e.type === 'bloom') {
+      const d = (e.payload && e.payload.domain) || 'earlier';
+      domains[d] = domains[d] || { steps: 0, blooms: 0 };
+      if (e.type === 'step') domains[d].steps += 1; else domains[d].blooms += 1;
+    }
+  }
+
+  const activeSince = now - 7 * DAY_MS;
+  const activeMembers7d = members.filter(m => memberLastSeen(m, last) >= activeSince).length;
+  const newMembers7d = members.filter(m => (m.joinedAt ?? 0) >= activeSince).length;
+
+  // Median hours from a struggle to that circle's next recover.
+  const supportHours: number[] = [];
+  const byCircle = new Map<string, Row[]>();
+  for (const e of events) {
+    if (!byCircle.has(e.circleId)) byCircle.set(e.circleId, []);
+    byCircle.get(e.circleId)!.push(e);
+  }
+  for (const list of byCircle.values()) {
+    const sorted = list.slice().sort((a, b) => a.createdAt - b.createdAt);
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].type !== 'struggle') continue;
+      const recover = sorted.slice(i + 1).find(x => x.type === 'recover' || x.type === 'cheer');
+      if (recover) supportHours.push((recover.createdAt - sorted[i].createdAt) / 3600000);
+    }
+  }
+  supportHours.sort((a, b) => a - b);
+  const medianSupportHours = supportHours.length
+    ? Math.round(supportHours[Math.floor(supportHours.length / 2)] * 10) / 10 : null;
+
+  const weekAgoKey = todayKey(now - 7 * DAY_MS);
+  return {
+    generatedAt: now,
+    health: {
+      circles: circles.length,
+      members: members.length,
+      activeMembers7d,
+      newMembers7d,
+      eventsByDay: days,
+    },
+    goals: { domains },
+    community: {
+      medianSupportHours,
+      circleSizes: circles.map(c => members.filter(m => m.circleId === c.id).length),
+    },
+    whisperer: {
+      callsToday: usage.filter(u => u.day === today).reduce((s, u) => s + (u.count ?? 0), 0),
+      calls7d: usage.filter(u => u.day >= weekAgoKey).reduce((s, u) => s + (u.count ?? 0), 0),
+    },
+    sentiment: senti
+      .slice()
+      .sort((a, b) => String(a.day).localeCompare(String(b.day)))
+      .slice(-14)
+      .map(s => ({ day: s.day, upbeat: s.upbeat ?? 0, steady: s.steady ?? 0, strained: s.strained ?? 0, sampled: s.sampled ?? 0 })),
+    nudges7d: {
+      manual: nudges.filter(n => n.createdAt >= activeSince && n.source === 'manual').length,
+      workflow: nudges.filter(n => n.createdAt >= activeSince && n.source === 'workflow').length,
+    },
+  };
+}
+
+export function buildInterventions(input: {
+  circles: Row[]; members: Row[]; events: Row[]; usage: Row[]; now: number;
+}) {
+  const { circles, members, events, usage, now } = input;
+  const last = lastEventByMember(events);
+  const circleName = (id: string) => {
+    const c = circles.find(x => x.id === id);
+    return (c && c.name) || 'a circle';
+  };
+
+  const stalled = members
+    .map(m => ({ m, seen: memberLastSeen(m, last) }))
+    .filter(x => now - x.seen >= STALLED_DAYS * DAY_MS)
+    .map(x => ({
+      memberId: x.m.id, circleId: x.m.circleId,
+      name: x.m.name, avatarId: x.m.avatarId, quiet: !!x.m.quiet,
+      circleName: circleName(x.m.circleId),
+      daysQuiet: Math.floor((now - x.seen) / DAY_MS),
+    }))
+    .sort((a, b) => b.daysQuiet - a.daysQuiet);
+
+  const struggles: Array<Record<string, any>> = [];
+  for (const e of events) {
+    if (e.type !== 'struggle') continue;
+    const ageHours = (now - e.createdAt) / 3600000;
+    if (ageHours < STRUGGLE_UNSUPPORTED_HOURS) continue;
+    const supported = events.some(x => x.circleId === e.circleId && x.createdAt > e.createdAt
+      && (x.type === 'recover'
+        || (x.type === 'cheer' && x.payload && x.payload.toMemberId === e.memberId)));
+    if (supported) continue;
+    const m = members.find(x => x.id === e.memberId);
+    struggles.push({
+      memberId: e.memberId, circleId: e.circleId,
+      name: m ? m.name : 'a member', avatarId: m ? m.avatarId : '0',
+      circleName: circleName(e.circleId),
+      hoursAgo: Math.floor(ageHours),
+    });
+  }
+
+  const today = todayKey(now);
+  const aiCapped = usage
+    .filter(u => u.day === today && (u.count ?? 0) >= CIRCLE_AI_CAP)
+    .map(u => ({ circleName: circleName(u.circleId), count: u.count }));
+
+  return { stalled, struggles, aiCapped };
+}

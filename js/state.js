@@ -23,7 +23,7 @@ function defaultNet() {
 
 GroveState.defaultState = function (now) {
   return {
-    version: 4,
+    version: 5,
     player: { name: '', avatarId: 0, accentId: 0, createdAt: now },
     xp: 0,
     petals: 0,
@@ -49,6 +49,11 @@ GroveState.defaultState = function (now) {
     aiConsent: { enabled: false, notedAt: null },   // whisperer opt-in
     dailyWhisper: { day: null, text: null },        // cached daily AI affirmation
     voice: { name: null },                          // speech voice pref (null = auto)
+    // Progressive account: null until she claims her grove. Backups strip
+    // 🌙 private goals unless she opts them in.
+    account: { userId: null, email: null, linkedAt: null, backupPrivateGoals: false, lastBackupDay: null },
+    accountPrompt: { shown: {}, claimed: false },   // one gentle ask per trigger
+    quiet: false,                                   // opt out of keeper nudges
   };
 };
 
@@ -77,12 +82,20 @@ GroveState.migrate = function (raw) {
   if (!raw.voice || typeof raw.voice !== 'object') {
     raw.voice = { name: null };
   }
+  if (raw.version === 4) raw.version = 5;
+  if (!raw.account || typeof raw.account !== 'object') {
+    raw.account = { userId: null, email: null, linkedAt: null, backupPrivateGoals: false, lastBackupDay: null };
+  }
+  if (!raw.accountPrompt || typeof raw.accountPrompt !== 'object') {
+    raw.accountPrompt = { shown: {}, claimed: false };
+  }
+  if (typeof raw.quiet !== 'boolean') raw.quiet = false;
   return raw;
 };
 
 function isValid(raw) {
   return !!raw && typeof raw === 'object'
-    && (raw.version === 1 || raw.version === 2 || raw.version === 3 || raw.version === 4)
+    && raw.version >= 1 && raw.version <= 5
     && raw.player && typeof raw.player === 'object'
     && Array.isArray(raw.goals)
     && raw.streak && typeof raw.streak === 'object'
@@ -113,6 +126,18 @@ GroveState.reset = function () {
 
 GroveState.exportJson = function (state) {
   return JSON.stringify(state, null, 2);
+};
+
+// Cloud-backup snapshot. 🌙 private goals (and their journal lines) stay on
+// the device unless she explicitly opts them in. Never mutates the original.
+GroveState.backupBlob = function (state, includePrivate) {
+  const copy = JSON.parse(JSON.stringify(state));
+  if (!includePrivate) {
+    const privateIds = new Set(copy.goals.filter(g => g.private).map(g => g.id));
+    copy.goals = copy.goals.filter(g => !g.private);
+    copy.journal = copy.journal.filter(j => !privateIds.has(j.goalId));
+  }
+  return JSON.stringify(copy);
 };
 
 GroveState.importJson = function (text) {

@@ -407,6 +407,16 @@ textarea.boost-composer { min-height: 96px; resize: vertical; margin: 10px 0 4px
   .invite-row .btn { width: 100%; }
 }
 
+/* ---------- claim card & keeper dashboard ---------- */
+.claim-card { border: 1.5px solid var(--accent); background: linear-gradient(120deg, var(--accent-soft), var(--card)); }
+.admin-h3 { font-size: 0.9rem; margin: 14px 0 4px; color: var(--leaf-dark); }
+.admin-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 4px; border-bottom: 1px dashed var(--line); flex-wrap: wrap;
+}
+.admin-row:last-child { border-bottom: none; }
+.admin-who { font-size: 0.92rem; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

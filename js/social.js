@@ -49,11 +49,13 @@ function makeEvent(type, payload) {
   return { client_key: GroveSocial.uuid(), type, payload };
 }
 
+// domain is one of six category ids — content-free, so quiet goals keep it
+// (it feeds the aggregate-only keeper dashboard).
 GroveSocial.buildStepEvent = function (goal, stageAfter) {
-  return makeEvent('step', { goalTitle: goal.private ? null : goal.name, stage: stageAfter });
+  return makeEvent('step', { goalTitle: goal.private ? null : goal.name, domain: goal.domain, stage: stageAfter });
 };
 GroveSocial.buildBloomEvent = function (goal) {
-  return makeEvent('bloom', { goalTitle: goal.private ? null : goal.name });
+  return makeEvent('bloom', { goalTitle: goal.private ? null : goal.name, domain: goal.domain });
 };
 GroveSocial.buildStruggleEvent = function (text) {
   return makeEvent('struggle', { text: String(text).trim().slice(0, 280) });
