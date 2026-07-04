@@ -137,6 +137,8 @@ GroveNetAppDeploy.makeClient = function (cfg) {
       cheer: (p) => aiPost('/api/ai/cheer', p),
       boostReplies: (p) => aiPost('/api/ai/boost-replies', p),
       insights: (p) => aiPost('/api/ai/insights', p),
+      goalIdeas: (p) => aiPost('/api/ai/goal-ideas', p),
+      transcribe: (p) => aiPost('/api/ai/transcribe', p),
     },
 
     // ---------- phase 4: accounts, keeper notes, admin ----------

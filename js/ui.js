@@ -568,6 +568,7 @@ const GroveUI = {};
       name: ctx.state.player.name || '', avatarId: ctx.state.player.avatarId || 0,
       accentId: ctx.state.player.accentId || 0,
       domain: 'career', goalName: '', goalEmoji: '🌱', steps: [], private: false,
+      seed: '', ideas: null, ideasLoading: false,
     };
     renderWizard();
   }
@@ -610,12 +611,42 @@ const GroveUI = {};
         <p class="sub">Pick a path — or grow your own. Every goal becomes a plant; every step waters it.</p>
         <div class="domain-tabs">${domTabs}</div>
         <div class="template-list">${templates}
-          <button class="template-pick" data-action="pick-custom">
+          ${ai() ? `<button class="template-pick whisper-btn" data-action="ob-ideas-open">
             <span class="temoji">✨</span>
+            <span><span class="tname">Help me find a goal</span><br><span class="tsteps">tell the whisperer what’s on your mind</span></span>
+          </button>` : ''}
+          <button class="template-pick" data-action="pick-custom">
+            <span class="temoji">🌱</span>
             <span><span class="tname">My own goal</span><br><span class="tsteps">write your own tiny steps</span></span>
           </button>
         </div>
         ${ob.onboarding ? '' : `<div class="modal-actions"><button class="btn secondary" data-action="close-modal">Cancel</button></div>`}`);
+    } else if (ob.stage === 'ideas') {
+      const ideas = (ob.ideas || []).map((idea, idx) => {
+        const dom = domainById(idea.domain);
+        return `
+        <button class="template-pick" data-action="ob-idea-pick" data-idx="${idx}">
+          <span class="temoji">${dom.emoji}</span>
+          <span><span class="tname">${esc(idea.name)}</span><br>
+          <span class="tsteps">${esc(idea.why)}</span></span>
+        </button>`;
+      }).join('');
+      showModal(`
+        <h2>What’s been on your mind? ✨</h2>
+        <p class="sub">Say it any way it comes — the whisperer will shape it into goals you could plant.</p>
+        <textarea id="ob-seed" class="text-input" rows="3" maxlength="240"
+          placeholder="e.g. I feel stuck at work and I miss making things with my hands"
+          style="margin:10px 0;resize:vertical">${esc(ob.seed || '')}</textarea>
+        <div class="modal-actions" style="justify-content:flex-start;margin-top:0">
+          <button class="btn accent" data-action="ob-ideas-get">✨ Suggest goals</button>
+          ${(Whisper().speechAvailable() || serverDictationReady())
+            ? `<button class="btn small secondary mic-btn" data-action="voice-dictate" data-target="ob-seed">🎙️ dictate</button>` : ''}
+        </div>
+        ${ob.ideasLoading ? '<div class="empty-note">✨ listening to the grove…</div>' : ''}
+        ${ideas ? `<div class="template-list" style="margin-top:12px">${ideas}</div>` : ''}
+        <div class="modal-actions">
+          <button class="btn secondary" data-action="ob-back">← Back</button>
+        </div>`);
     } else if (ob.stage === 'steps') {
       const stepRows = ob.steps.map((s, i) => `
         <div class="se-row">
@@ -644,6 +675,8 @@ const GroveUI = {};
   function collectWizardInputs() {
     const nameEl = $('#ob-name');
     if (nameEl) ob.name = nameEl.value.trim();
+    const seedEl = $('#ob-seed');
+    if (seedEl) ob.seed = seedEl.value;
     const goalEl = $('#ob-goal-name');
     if (goalEl) ob.goalName = goalEl.value.trim();
     const privEl = $('#ob-private');
@@ -1021,8 +1054,9 @@ const GroveUI = {};
     showModal(`
       <h2>The Grove Whisperer ✨</h2>
       <p class="sub">A little AI lives in real groves. When you tap a whisperer button,
-        only the words involved — a goal name you're drafting steps for, or the journal
-        lines you ask it to read — are sent to the platform's AI to write something back.
+        only the words involved — a goal name you're drafting steps for, a dream you
+        describe, a voice note it transcribes for you, or the journal lines you ask it
+        to read — are sent to the platform's AI to write something back.
         Nothing is ever sent until you tap.</p>
       <p class="sub consent-note">🌙 Private goals are never included. You can turn the
         whisperer off any time in More → your data.</p>
@@ -1060,6 +1094,43 @@ const GroveUI = {};
     ctx.save();
     toast('The whisperer sleeps. Your grove is yours alone 🌙');
     renderAll();
+  }
+
+  // Goal discovery: whatever is on her mind becomes three plantable ideas.
+  function handleGoalIdeas() {
+    collectWizardInputs(); // seed must survive the consent modal swap
+    withConsent(async () => {
+      if (!ob) return;
+      const seed = String(ob.seed || '').trim();
+      if (seed.length < 4) { toast('Tell the grove a little more first 🌱'); return; }
+      if (!ai()) { toast(esc(D.REAL_CIRCLE.aiQuiet)); return; }
+      ob.ideasLoading = true;
+      ob.ideas = null;
+      renderWizard();
+      const r = await ai().goalIdeas({ seed, domain: ob.domain });
+      if (!ob) return; // wizard closed while we waited
+      ob.ideasLoading = false;
+      if (r.ok && Array.isArray(r.ideas) && r.ideas.length) {
+        ob.ideas = r.ideas;
+        renderWizard();
+      } else {
+        renderWizard();
+        toast(esc(r.error === 'ai-rest' ? D.REAL_CIRCLE.aiRest : D.REAL_CIRCLE.aiQuiet));
+      }
+    });
+  }
+
+  function handleIdeaPick(idx) {
+    const idea = ob && ob.ideas && ob.ideas[idx];
+    if (!idea) return;
+    ob.goalName = idea.name;
+    ob.domain = idea.domain;
+    ob.goalEmoji = '✨';
+    ob.steps = ['My first tiny step', 'My second tiny step', 'My third tiny step'];
+    ob.stage = 'steps';
+    renderWizard();
+    // Consent was granted to get here — draft her tiny steps in the same breath.
+    handleWhisperSteps();
   }
 
   function handleWhisperSteps() {
@@ -1177,18 +1248,35 @@ const GroveUI = {};
   };
   const DICTATE_FALLBACK_NOTE = 'Voice input hiccuped — typing works too 🌿';
 
-  function handleDictate(targetId, btn) {
-    const el = document.getElementById(targetId);
-    if (!el) return;
-    if (dictation) {
-      dictation.stop(); // onEnd resets the button and clears the session
-      return;
-    }
-    const session = Whisper().makeDictation({
-      onStart() { btn.classList.add('listening'); },
-      onText(text) {
-        el.value = (el.value ? el.value + ' ' : '') + text;
-        el.focus();
+  // Errors that mean "this browser's speech service is a zombie" — Opera and
+  // friends expose the API but nothing answers. The grove's own transcriber
+  // takes over when it can.
+  const SERVER_DICTATE_ERRORS = ['no-response', 'network', 'service-not-allowed', 'language-not-supported'];
+
+  function serverDictationReady() {
+    return !!(ai() && Whisper().consentGranted(ctx.state) && Whisper().recorderAvailable());
+  }
+
+  function serverDictate(el, btn) {
+    const session = Whisper().makeRecorder({
+      onStart() {
+        btn.classList.add('listening');
+        toast('Recording — tap the mic again to finish 🎙️');
+      },
+      onBlob(base64, mimeType) {
+        toast('The whisperer is listening back… ✨');
+        ai().transcribe({ audio: base64, mimeType }).then((r) => {
+          if (r.ok && r.text) {
+            el.value = (el.value ? el.value + ' ' : '') + r.text;
+            el.focus();
+          } else if (r.error === 'ai-rest') {
+            toast(esc(D.REAL_CIRCLE.aiRest));
+          } else if (r.error === 'http-422') {
+            toast(DICTATE_NOTES['no-speech']);
+          } else {
+            toast('The transcriber hiccuped — typing works too 🌿');
+          }
+        });
       },
       onError(kind) {
         const note = (kind in DICTATE_NOTES) ? DICTATE_NOTES[kind] : DICTATE_FALLBACK_NOTE;
@@ -1199,7 +1287,56 @@ const GroveUI = {};
         btn.classList.remove('listening');
       },
     });
+    if (!session) { toast(DICTATE_FALLBACK_NOTE); return; }
+    dictation = session;
+    btn.classList.add('listening');
+    session.start();
+  }
+
+  function handleDictate(targetId, btn) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    if (dictation) {
+      dictation.stop(); // onEnd resets the button and clears the session
+      return;
+    }
+    // A device that proved its native recognition dead goes straight to the
+    // grove's transcriber on every later tap.
+    if ((ctx.state.voice || {}).dictate === 'server' && serverDictationReady()) {
+      serverDictate(el, btn);
+      return;
+    }
+    const session = Whisper().makeDictation({
+      onStart() { btn.classList.add('listening'); },
+      onText(text) {
+        el.value = (el.value ? el.value + ' ' : '') + text;
+        el.focus();
+      },
+      onError(kind) {
+        if (SERVER_DICTATE_ERRORS.indexOf(kind) !== -1) {
+          if (serverDictationReady()) {
+            if (!ctx.state.voice) ctx.state.voice = { name: null };
+            ctx.state.voice.dictate = 'server';
+            ctx.save();
+            toast('Native voice input is asleep in this browser — the grove will listen instead 🌿');
+            setTimeout(() => { if (!dictation) serverDictate(el, btn); }, 400);
+            return;
+          }
+          if (ai() && !Whisper().consentGranted(ctx.state)) {
+            toast('This browser needs the Whisperer to hear you — tap any ✨ button once to turn it on, then try the mic again.');
+            return;
+          }
+        }
+        const note = (kind in DICTATE_NOTES) ? DICTATE_NOTES[kind] : DICTATE_FALLBACK_NOTE;
+        if (note) toast(note);
+      },
+      onEnd() {
+        dictation = null;
+        btn.classList.remove('listening');
+      },
+    });
     if (!session) {
+      if (serverDictationReady()) { serverDictate(el, btn); return; }
       toast('Voice input isn’t available in this browser — typing works great too 🌿');
       return;
     }
@@ -1266,6 +1403,9 @@ const GroveUI = {};
       ob.goalName = t.name; ob.goalEmoji = t.emoji; ob.steps = t.steps.slice();
       ob.stage = 'steps'; renderWizard();
     }
+    else if (a === 'ob-ideas-open') { collectWizardInputs(); ob.stage = 'ideas'; ob.ideas = null; renderWizard(); }
+    else if (a === 'ob-ideas-get') handleGoalIdeas();
+    else if (a === 'ob-idea-pick') handleIdeaPick(Number(btn.dataset.idx));
     else if (a === 'pick-custom') {
       ob.goalName = ''; ob.goalEmoji = '✨';
       ob.steps = ['My first tiny step', 'My second tiny step', 'My third tiny step'];

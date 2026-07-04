@@ -125,11 +125,16 @@ Steps:
 
 Expected: After the bloom, Today shows a card titled "Your grove is growing" with a "Claim my grove" button and a "not now" button; after clicking "not now" and reloading, the card does not reappear.
 
-## Test 10 - The keeper's gate stays locked without sign-in
+## Test 10 - The whisperer can suggest goals from what is on her mind
 Viewport: desktop
-Description: Opening the admin dashboard route without signing in shows a locked gate, never data.
+Description: In the goal wizard, "Help me find a goal" turns a free-text worry into three pickable goal ideas.
 
 Steps:
-1. Open the app URL with #admin appended to it (for example https://<app-host>/#admin) and wait for load
+1. Open the app and complete onboarding with a unique name and any template goal
+2. Open the Circle tab and start a circle named "Idea Grove"
+3. Open Today, click "Plant a new goal", then click "Help me find a goal"
+4. If a consent dialog appears, click "Let it whisper"
+5. Type "I feel stuck at work and I miss making things with my hands" into the text box and click "Suggest goals"
+6. Wait for the ideas to appear
 
-Expected: A screen titled "The Grove Keeper's Gate" is visible with a "Sign in" button, and no dashboard statistics or member names are shown.
+Expected: Exactly three goal idea cards appear, each with a goal name and a short reason; clicking one moves to the tiny-steps editor with that goal name filled in.

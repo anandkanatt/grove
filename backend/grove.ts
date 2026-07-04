@@ -117,6 +117,45 @@ export function insightsPrompt(payload: unknown): string {
     + 'forward. Speak to her directly. No bullet points.';
 }
 
+export const GOAL_DOMAINS = ['career', 'fitness', 'learning', 'money', 'wellbeing', 'creative'];
+
+export const GOAL_IDEAS_SCHEMA = {
+  type: 'object',
+  properties: {
+    ideas: {
+      type: 'array',
+      minItems: 3,
+      maxItems: 3,
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          domain: { type: 'string', enum: GOAL_DOMAINS },
+          why: { type: 'string' },
+        },
+        required: ['name', 'domain', 'why'],
+      },
+    },
+  },
+  required: ['ideas'],
+};
+
+export function goalIdeasPrompt(seed: string, domainHint: string): string {
+  const hint = GOAL_DOMAINS.indexOf(domainHint) !== -1
+    ? ` She was browsing the "${domainHint}" area, but suggest across areas if something fits better.` : '';
+  return `A player told the grove what has been on her mind: "${clamp(seed, 240)}".${hint} `
+    + 'Suggest exactly 3 personal goals she could plant. Each: a name (under 45 characters, '
+    + 'concrete and hers — like "Run a 5K" not "Improve fitness"), its life area (domain), and '
+    + 'why (one warm sentence under 90 characters connecting it to what she said). '
+    + 'Real, achievable-in-months goals. No hashtags, no numbering.';
+}
+
+export function transcribePrompt(): string {
+  return 'Transcribe this voice note exactly as spoken, in the language spoken. '
+    + 'Return only the transcribed words — no commentary, no labels, no quotation marks. '
+    + 'If the audio contains no discernible speech, return an empty response.';
+}
+
 // ---------- phase 4: grove keeper (admin) helpers ----------
 
 export const SENTIMENT_LABELS = ['upbeat', 'steady', 'strained'];
