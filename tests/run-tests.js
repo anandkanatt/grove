@@ -274,7 +274,7 @@ function fakeStorage() {
 
 test('defaultState has the full schema', () => {
   const st = S.defaultState(T('2026-07-02'));
-  assertEq(st.version, 4);
+  assertEq(st.version, 5);
   for (const key of ['player', 'xp', 'petals', 'streak', 'goals', 'journal', 'badges',
     'decor', 'shopOwned', 'sunshineSent', 'challengesWon', 'circle', 'lastVisit', 'onboarded', 'net']) {
     assert(key in st, `missing key ${key}`);
@@ -330,7 +330,7 @@ test('a v1 save loads and migrates to v2', () => {
     createdAt: 0, bloomedAt: null, reflection: null });
   storage.setItem('grove-save-v1', JSON.stringify(v1));
   const back = S.load();
-  assertEq(back.version, 4);
+  assertEq(back.version, 5);
   assertEq(back.net.outbox, [], 'net block added');
   assertEq(back.net.cursor, 0);
   assertEq(back.goals[0].private, false, 'goals gain the private flag');
@@ -349,7 +349,7 @@ test('importJson migrates v1 exports and still rejects garbage', () => {
   v1.version = 1;
   delete v1.net;
   const back = S.importJson(JSON.stringify(v1));
-  assertEq(back.version, 4);
+  assertEq(back.version, 5);
   assert('net' in back, 'net added');
   assertEq(back.net.session, null);
   assertThrows(() => S.importJson('{}'), 'empty object rejected');
@@ -377,7 +377,7 @@ test('a v2 save migrates to v3 preserving phase-2 data', () => {
   v2.net.circle = { id: 'c1', name: 'Us', inviteCode: 'ABC234', memberId: 'me' };
   storage.setItem('grove-save-v1', JSON.stringify(v2));
   const back = S.load();
-  assertEq(back.version, 4);
+  assertEq(back.version, 5);
   assertEq(back.aiConsent, { enabled: false, notedAt: null });
   assertEq(back.dailyWhisper, { day: null, text: null });
   assertEq(back.net.platform, null);
@@ -540,14 +540,16 @@ test('syncSpiritSlots trims the sim roster to the spirit seats', () => {
   assertEq(solo.circle.members.length, 5, 'solo keeps all five spirits');
 });
 test('event builders respect privacy and shape', () => {
-  const pub = Social.buildStepEvent({ name: 'Run 5K', private: false }, 2);
+  const pub = Social.buildStepEvent({ name: 'Run 5K', domain: 'fitness', private: false }, 2);
   assertEq(pub.type, 'step');
-  assertEq(pub.payload, { goalTitle: 'Run 5K', stage: 2 });
+  assertEq(pub.payload, { goalTitle: 'Run 5K', domain: 'fitness', stage: 2 });
   assert(UUID_V4.test(pub.client_key), 'client_key is a v4 uuid');
-  assertEq(Social.buildStepEvent({ name: 'Secret', private: true }, 1).payload.goalTitle, null);
-  const bloom = Social.buildBloomEvent({ name: 'Run 5K', private: false });
+  const priv = Social.buildStepEvent({ name: 'Secret', domain: 'money', private: true }, 1);
+  assertEq(priv.payload.goalTitle, null);
+  assertEq(priv.payload.domain, 'money', 'domain is a category id — safe for quiet goals');
+  const bloom = Social.buildBloomEvent({ name: 'Run 5K', domain: 'fitness', private: false });
   assertEq(bloom.type, 'bloom');
-  assertEq(bloom.payload, { goalTitle: 'Run 5K' });
+  assertEq(bloom.payload, { goalTitle: 'Run 5K', domain: 'fitness' });
   const strug = Social.buildStruggleEvent('  ' + 'x'.repeat(300));
   assertEq(strug.payload.text.length, 280, 'struggle text capped');
   assertEq(strug.payload.text[0], 'x', 'struggle text trimmed');
@@ -1355,15 +1357,79 @@ test('the watchdog stays quiet when a result arrives in time', async () => {
 // ---------- state v4: voice preference ----------
 test('state v4 carries a voice preference and migrates older saves', () => {
   const st = S.defaultState(T('2026-07-04'));
-  assertEq(st.version, 4);
+  assertEq(st.version, 5);
   assert(st.voice && 'name' in st.voice, 'voice pref present');
   assertEq(st.voice.name, null);
   const old = S.defaultState(T('2026-07-04'));
   old.version = 3;
   delete old.voice;
   const m = S.migrate(old);
-  assertEq(m.version, 4);
+  assertEq(m.version, 5);
   assertEq(m.voice.name, null);
+});
+
+// ---------- phase 4: state v5, claim triggers, backups ----------
+test('state v5 carries account, prompt, and quiet fields', () => {
+  const st = S.defaultState(T('2026-07-04'));
+  assertEq(st.version, 5);
+  assertEq(st.account.userId, null);
+  assertEq(st.account.backupPrivateGoals, false);
+  assertEq(st.accountPrompt, { shown: {}, claimed: false });
+  assertEq(st.quiet, false);
+  const old = S.defaultState(T('2026-07-04'));
+  old.version = 4;
+  delete old.account; delete old.accountPrompt; delete old.quiet;
+  const m = S.migrate(old);
+  assertEq(m.version, 5);
+  assertEq(m.account.userId, null);
+  assertEq(m.accountPrompt.claimed, false);
+  assertEq(m.quiet, false);
+});
+
+test('claimTrigger fires per trigger, in priority order, and respects suppression', () => {
+  const st = makeState(makeGoal(3, 0));
+  st.account = { userId: null };
+  st.accountPrompt = { shown: {}, claimed: false };
+  st.net = { circle: null };
+  assertEq(L.claimTrigger(st), null, 'nothing earned yet');
+  st.streak.count = 7;
+  assertEq(L.claimTrigger(st), 'streak-7');
+  st.goals[0].bloomedAt = 1;
+  assertEq(L.claimTrigger(st), 'first-bloom', 'bloom outranks streak');
+  st.net.circle = { id: 'c1' };
+  assertEq(L.claimTrigger(st), 'circle', 'circle outranks all');
+  st.accountPrompt.shown = { circle: true };
+  assertEq(L.claimTrigger(st), 'first-bloom', 'shown triggers are skipped');
+  st.accountPrompt.shown = { circle: true, 'first-bloom': true, 'streak-7': true };
+  assertEq(L.claimTrigger(st), null, 'all three dismissed, silence');
+  st.accountPrompt.shown = {};
+  st.account.userId = 'u1';
+  assertEq(L.claimTrigger(st), null, 'linked account never prompts');
+  st.account.userId = null;
+  st.accountPrompt.claimed = true;
+  assertEq(L.claimTrigger(st), null, 'claimed suppresses forever');
+});
+
+test('backupBlob strips private goals and their journal unless included', () => {
+  const st = S.defaultState(T('2026-07-04'));
+  st.player.name = 'Ana';
+  st.goals.push({ id: 'g1', name: 'Public', domain: 'career', emoji: '✨', private: false,
+    steps: [], createdAt: 1, bloomedAt: null, reflection: null });
+  st.goals.push({ id: 'g2', name: 'Secret', domain: 'money', emoji: '🌙', private: true,
+    steps: [], createdAt: 1, bloomedAt: null, reflection: null });
+  st.journal.push({ day: '2026-07-01', text: 'about secret', goalId: 'g2' });
+  st.journal.push({ day: '2026-07-02', text: 'about public', goalId: 'g1' });
+  const stripped = JSON.parse(S.backupBlob(st, false));
+  assertEq(stripped.goals.length, 1);
+  assertEq(stripped.goals[0].name, 'Public');
+  assertEq(stripped.journal.length, 1);
+  assertEq(stripped.journal[0].goalId, 'g1');
+  const full = JSON.parse(S.backupBlob(st, true));
+  assertEq(full.goals.length, 2);
+  assertEq(full.journal.length, 2);
+  const back = S.importJson(S.backupBlob(st, false));
+  assertEq(back.player.name, 'Ana', 'backups round-trip through importJson');
+  assertEq(st.goals.length, 2, 'original state untouched');
 });
 
 // ---------- summary ----------

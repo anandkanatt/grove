@@ -204,5 +204,23 @@ GroveLogic.evaluateBadges = function (state, ts) {
   return earned;
 };
 
+// Progressive-account prompt: fires at moments of demonstrated investment,
+// once per trigger, never after she claims (or links) her grove. Priority:
+// joining people > finishing something > showing up a week straight.
+GroveLogic.claimTrigger = function (state) {
+  const account = state.account || {};
+  const prompt = state.accountPrompt || { shown: {}, claimed: false };
+  if (account.userId || prompt.claimed) return null;
+  const shown = prompt.shown || {};
+  const fired = [];
+  if (state.net && state.net.circle) fired.push('circle');
+  if (state.goals.some(g => g.bloomedAt)) fired.push('first-bloom');
+  if (state.streak.count >= 7) fired.push('streak-7');
+  for (const t of fired) {
+    if (!shown[t]) return t;
+  }
+  return null;
+};
+
 if (typeof module !== 'undefined' && module.exports) module.exports = GroveLogic;
 if (typeof window !== 'undefined') window.GroveLogic = GroveLogic;
