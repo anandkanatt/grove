@@ -929,18 +929,32 @@ const GroveUI = {};
       <p class="sub consent-note">🌙 Private goals are never included. You can turn the
         whisperer off any time in More → your data.</p>
       <div class="modal-actions">
-        <button class="btn secondary" data-action="close-modal">Not now</button>
+        <button class="btn secondary" data-action="whisper-consent-decline">Not now</button>
         <button class="btn accent" data-action="whisper-consent-accept">Let it whisper ✨</button>
       </div>`);
+  }
+
+  // The consent dialog may have replaced the goal wizard's modal — bring the
+  // wizard (and every typed input, held in ob) back before anything else, so
+  // neither accepting nor declining ever costs her the plan she wrote.
+  function restoreWizardIfOpen() {
+    if (ob) renderWizard();
   }
 
   function handleConsentAccept() {
     Whisper().grantConsent(ctx.state, Date.now());
     ctx.save();
     closeModal();
+    restoreWizardIfOpen();
     const fn = pendingConsentAction;
     pendingConsentAction = null;
     if (fn) fn();
+  }
+
+  function handleConsentDecline() {
+    pendingConsentAction = null;
+    closeModal();
+    restoreWizardIfOpen();
   }
 
   function handleConsentRevoke() {
@@ -1176,6 +1190,7 @@ const GroveUI = {};
     else if (a === 'cheer-real') handleCheerReal(btn.dataset.member, btn.dataset.event);
     else if (a === 'toggle-private') handleTogglePrivate(btn.dataset.goal);
     else if (a === 'whisper-consent-accept') handleConsentAccept();
+    else if (a === 'whisper-consent-decline') handleConsentDecline();
     else if (a === 'whisper-consent-revoke') handleConsentRevoke();
     else if (a === 'whisper-steps') handleWhisperSteps();
     else if (a === 'whisper-replies') handleWhisperReplies(btn.dataset.member, btn.dataset.event);
