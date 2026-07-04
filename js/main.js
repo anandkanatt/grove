@@ -167,6 +167,11 @@
     async backupPull() { return client ? client.backupPull() : { ok: false, error: 'offline' }; },
     async setQuiet(q) { return client ? client.setQuiet(q) : { ok: false, error: 'offline' }; },
     async pullNudges() { return client ? client.pullNudges() : { ok: true, notes: [] }; },
+    async pullMessages(cid, since) { return client ? client.pullMessages(cid, since) : { ok: false, error: 'offline' }; },
+    async sendMessage(cid, mid, p) { return client ? client.sendMessage(cid, mid, p) : { ok: false, error: 'offline' }; },
+    async voiceUrl(cid, path) { return client ? client.voiceUrl(cid, path) : { ok: false, error: 'offline' }; },
+    async setMentor(cid, mid, cfg) { return client ? client.setMentor(cid, mid, cfg) : { ok: false, error: 'offline' }; },
+    async mentorChat(cid, mid, q, goals) { return client ? client.mentorChat(cid, mid, q, goals) : { ok: false, error: 'offline' }; },
     async leaveCircleFlow() {
       if (!client || !state.net.circle) return { ok: false, error: 'offline' };
       const rc = state.net.circle;
@@ -206,6 +211,21 @@
   window.Grove = ctx;           // console/debug handle
   window.Grove.net = window.GroveFlows;
   window.Grove.sync = null;
+  window.Grove.flags = null;
+
+  // Feature flags + maintenance banner (platform hosts only; fail-open).
+  if (onPlatform()) {
+    const flagClient = window.GroveNetAppDeploy.makeClient({
+      platform: window.GrovePlatform, session: null,
+      circleRef: () => null, onSession() {},
+    });
+    flagClient.flags().then((r) => {
+      if (r.ok) {
+        window.Grove.flags = r.flags;
+        UI.applyFlags(r.flags);
+      }
+    });
+  }
 
   if (!state.onboarded) {
     S.save(state);

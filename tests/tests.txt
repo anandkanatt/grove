@@ -31,7 +31,7 @@ Steps:
 1. Open the app and complete onboarding with a unique name
 2. Click the "Circle" tab
 
-Expected: A card titled "Make it real" is visible with "Start a circle" and "Join with a code" buttons, and five member cards are shown.
+Expected: A card titled "Make it real" is visible with "Start a circle" and "Join with a code" buttons, and at least four member cards are shown (more may sit off-screen in the horizontal strip).
 
 ## Test 4 - Creating a circle shows an invite code
 Viewport: desktop
@@ -47,18 +47,19 @@ Steps:
 
 Expected: The Circle tab header shows "The Bloomers", an "Invite code:" chip with a six-character code, and a "Copy invite link" button. One member card is labeled REAL is not required; garden spirit tags are visible on simulated members.
 
-## Test 5 - A step taken by one member reaches another
+## Test 5 - Steps and chat travel between circle members
 Viewport: desktop
-Description: Two anonymous players share a circle; Actor B's step appears in Actor A's feed.
+Description: Two anonymous players share a circle; Actor B's step reaches Actor A's feed and a chat message reaches Actor A's circle chat.
 
 Steps:
 1. Actor A opens the app, completes onboarding with a unique name, opens Circle, starts a circle named "Sync Grove", and notes the invite code
 2. Actor B opens the app in a separate anonymous session, completes onboarding with a unique name
 3. Actor B opens the Circle tab, clicks "Join with a code", enters Actor A's invite code, and joins
 4. Actor B opens the Today view and checks off the first tiny step
-5. Actor A waits up to 60 seconds on the Circle tab for the feed to refresh
+5. Actor B opens the Circle tab, types "hello grove" into the circle chat input, and clicks "Send"
+6. Actor A waits up to 60 seconds on the Circle tab for the feed and chat to refresh
 
-Expected: Actor A's Grove Feed shows an entry saying Actor B's name took a step, and Actor B appears as a member card with a REAL ribbon.
+Expected: Actor A's Grove Feed shows an entry saying Actor B's name took a step, Actor B appears as a member card with a REAL ribbon, and the "Circle chat" card shows "hello grove" from Actor B.
 
 ## Test 6 - First whisperer tap asks for consent
 Viewport: desktop

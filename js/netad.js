@@ -41,6 +41,18 @@ GroveNetAppDeploy.makeClient = function (cfg) {
       return { ok: true, data: (r && r.data) || {} };
     } catch (e) { return fail(e); }
   }
+  async function put(url, body) {
+    try {
+      const r = await platform.api.put(url, body);
+      return { ok: true, data: (r && r.data) || {} };
+    } catch (e) { return fail(e); }
+  }
+  async function del(url) {
+    try {
+      const r = await platform.api.delete(url);
+      return { ok: true, data: (r && r.data) || {} };
+    } catch (e) { return fail(e); }
+  }
 
   const camelCircle = (d) => ({ id: d.circleId, name: d.circleName, inviteCode: d.inviteCode });
 
@@ -139,9 +151,109 @@ GroveNetAppDeploy.makeClient = function (cfg) {
       insights: (p) => aiPost('/api/ai/insights', p),
       goalIdeas: (p) => aiPost('/api/ai/goal-ideas', p),
       transcribe: (p) => aiPost('/api/ai/transcribe', p),
+      assess: (p) => aiPost('/api/ai/assess', p),
     },
 
-    // ---------- phase 4: accounts, keeper notes, admin ----------
+    // ---------- phase 5: chat, mentor, flags ----------
+
+    async pullMessages(circleId, since) {
+      const r = await get('/api/circles/' + circleId + '/messages?since=' + (since || 0)
+        + '&' + identityQuery());
+      if (!r.ok) return r;
+      return { ok: true, messages: r.data.messages || [], mentor: r.data.mentor || null };
+    },
+
+    async sendMessage(circleId, memberId, payload) {
+      const r = await post('/api/circles/' + circleId + '/messages',
+        Object.assign({ memberId, memberKey: memberKey() }, payload));
+      if (!r.ok) return r;
+      return { ok: true, message: r.data.message };
+    },
+
+    async voiceUrl(circleId, path) {
+      const r = await get('/api/circles/' + circleId + '/voice-url?path='
+        + encodeURIComponent(path) + '&' + identityQuery());
+      if (!r.ok) return r;
+      return { ok: true, url: r.data.url };
+    },
+
+    async setMentor(circleId, memberId, cfg) {
+      const r = await post('/api/circles/' + circleId + '/mentor',
+        Object.assign({ memberId, memberKey: memberKey() }, cfg));
+      if (!r.ok) return r;
+      return { ok: true, mentor: r.data.mentor };
+    },
+
+    async mentorChat(circleId, memberId, question, goals) {
+      const r = await post('/api/circles/' + circleId + '/mentor-chat',
+        { memberId, memberKey: memberKey(), question, goals });
+      if (!r.ok) return r;
+      return { ok: true, reply: r.data.reply };
+    },
+
+    async flags() {
+      const r = await get('/api/flags');
+      return r.ok ? { ok: true, flags: r.data } : r;
+    },
+
+    notifications: platform.notifications || null,
+
+    admin: {
+      overview: async () => {
+        const r = await get('/api/admin/overview');
+        return r.ok ? { ok: true, data: r.data } : r;
+      },
+      interventions: async () => {
+        const r = await get('/api/admin/interventions');
+        return r.ok ? { ok: true, data: r.data } : r;
+      },
+      nudge: async (memberId, text) => post('/api/admin/nudge', { memberId, text }),
+      campaigns: async () => {
+        const r = await get('/api/admin/campaigns');
+        return r.ok ? { ok: true, campaigns: r.data.campaigns } : r;
+      },
+      saveCampaign: (c) => (c.id
+        ? put('/api/admin/campaigns/' + c.id, c)
+        : post('/api/admin/campaigns', c)),
+      deleteCampaign: (id) => del('/api/admin/campaigns/' + id),
+      runCampaign: async (id) => post('/api/admin/campaigns/' + id + '/run', {}),
+      campaignLog: async (id) => {
+        const r = await get('/api/admin/campaigns/' + id + '/log');
+        return r.ok ? { ok: true, log: r.data.log } : r;
+      },
+      channels: async () => {
+        const r = await get('/api/admin/channels');
+        return r.ok ? { ok: true, channels: r.data } : r;
+      },
+      circles: async () => {
+        const r = await get('/api/admin/circles');
+        return r.ok ? { ok: true, circles: r.data.circles } : r;
+      },
+      circleDetail: async (id) => {
+        const r = await get('/api/admin/circles/' + id);
+        return r.ok ? { ok: true, data: r.data } : r;
+      },
+      regenInvite: async (id) => post('/api/admin/circles/' + id + '/regen-invite', {}),
+      removeMember: async (id) => post('/api/admin/members/' + id + '/remove', {}),
+      purgeCircle: async (id) => post('/api/admin/circles/' + id + '/purge', {}),
+      deleteMessage: (id) => del('/api/admin/messages/' + id),
+      deleteEvent: (id) => del('/api/admin/events/' + id),
+      circleAi: async (id, p) => post('/api/admin/circles/' + id + '/ai', p),
+      flags: async () => {
+        const r = await get('/api/admin/flags');
+        return r.ok ? { ok: true, flags: r.data } : r;
+      },
+      saveFlags: async (f) => {
+        const r = await put('/api/admin/flags', f);
+        return r.ok ? { ok: true, flags: r.data } : r;
+      },
+      auditLog: async () => {
+        const r = await get('/api/admin/audit');
+        return r.ok ? { ok: true, audit: r.data.audit } : r;
+      },
+    },
+
+    // ---------- phase 4: accounts & keeper notes ----------
     // api.* auto-attaches the Bearer token once platform auth has signed in.
 
     auth: platform.auth || null,
@@ -178,18 +290,6 @@ GroveNetAppDeploy.makeClient = function (cfg) {
       if (!ref || !memberKey()) return { ok: true, notes: [] };
       const r = await get('/api/circles/' + ref.id + '/nudges?' + identityQuery());
       return r.ok ? { ok: true, notes: r.data.notes || [] } : r;
-    },
-
-    admin: {
-      overview: async () => {
-        const r = await get('/api/admin/overview');
-        return r.ok ? { ok: true, data: r.data } : r;
-      },
-      interventions: async () => {
-        const r = await get('/api/admin/interventions');
-        return r.ok ? { ok: true, data: r.data } : r;
-      },
-      nudge: async (memberId, text) => post('/api/admin/nudge', { memberId, text }),
     },
   };
 };
