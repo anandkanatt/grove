@@ -58,8 +58,9 @@ export interface AiUsageRow {
   byMember?: Record<string, number>;
 }
 
-export function capExceeded(usage: AiUsageRow, memberId: string, isCoach: boolean): boolean {
-  if ((usage.count ?? 0) >= CIRCLE_AI_CAP) return true;
+export function capExceeded(usage: AiUsageRow, memberId: string, isCoach: boolean,
+  circleCap: number = CIRCLE_AI_CAP): boolean {
+  if ((usage.count ?? 0) >= circleCap) return true;
   if (isCoach && ((usage.byMember ?? {})[memberId] ?? 0) >= COACH_MEMBER_CAP) return true;
   return false;
 }
@@ -155,6 +156,157 @@ export function transcribePrompt(): string {
     + 'Return only the transcribed words — no commentary, no labels, no quotation marks. '
     + 'If the audio contains no discernible speech, return an empty response.';
 }
+
+// ---------- phase 5: chat, mentor, campaigns, flags ----------
+
+export const MESSAGE_CAP = 300;
+export const MENTOR_ID = '@mentor';
+export const MENTOR_TONES = ['gentle', 'direct'];
+
+export function validTextMessage(text: unknown): boolean {
+  const t = clamp(text, 500);
+  return t.length > 0;
+}
+
+export function mentorSystem(mentor: { name?: string; tone?: string }): string {
+  const name = clamp(mentor?.name, 30) || 'Sage';
+  const direct = mentor?.tone === 'direct';
+  return GROVE_TONE + ` You are also ${name}, the circle's mentor — labeled as an AI to everyone. `
+    + (direct
+      ? 'Your style: direct and practical. Name the one thing that matters, then one concrete next step. Kind, never harsh.'
+      : 'Your style: gentle and encouraging. Reflect what you heard, then offer one soft, concrete suggestion.')
+    + ' Keep replies under 3 short sentences. Never invent facts about members. No emojis except at most one leaf or flower.';
+}
+
+export function mentorChatPrompt(input: {
+  history: Array<{ from: string; text: string }>;
+  goals: string[];
+  asker: string;
+  question: string;
+}): string {
+  const hist = (input.history || []).slice(-12)
+    .map(h => `${clamp(h.from, 30)}: ${clamp(h.text, 200)}`).join('\n');
+  const goals = (input.goals || []).slice(0, 4).map(g => clamp(g, 45)).join('; ') || 'her quiet goals';
+  return `Recent circle chat:\n${hist || '(quiet so far)'}\n\n`
+    + `${clamp(input.asker, 30)} is tending: ${goals}.\n`
+    + `She says to you: "${clamp(input.question, 400)}"\n`
+    + 'Reply to her directly as the mentor.';
+}
+
+export const ASSESS_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string' },
+    suggestions: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 3 },
+  },
+  required: ['verdict', 'suggestions'],
+};
+
+export function assessPrompt(goalName: string, steps: string[]): string {
+  const list = (steps || []).slice(0, 12).map((s, i) => `${i + 1}. ${clamp(s, 90)}`).join('\n');
+  return `Her goal: "${clamp(goalName, 45)}". Her current tiny steps:\n${list}\n`
+    + 'Assess the plan in one warm sentence (verdict): is each step small enough to fit in a day, '
+    + 'concrete, and in a sensible order? Then give 1 to 3 suggestions — each a rewritten or added '
+    + 'step (plain instruction, under 90 characters, no numbering).';
+}
+
+export const CAMPAIGN_TRIGGERS = ['stalled', 'new-member', 'first-bloom', 'struggle-unsupported', 'everyone'];
+export const CAMPAIGN_CHANNELS = ['note', 'push'];
+
+export function validCampaign(c: any): boolean {
+  if (!c || typeof c !== 'object') return false;
+  if (!clamp(c.name, 40)) return false;
+  if (CAMPAIGN_TRIGGERS.indexOf(c.trigger) === -1) return false;
+  if (!Array.isArray(c.channels) || !c.channels.length) return false;
+  if (c.channels.some((ch: any) => CAMPAIGN_CHANNELS.indexOf(ch) === -1)) return false;
+  if (!clamp(c.template, 240)) return false;
+  const days = Number(c.days), cooldown = Number(c.cooldownDays);
+  return days >= 0 && days <= 90 && cooldown >= 1 && cooldown <= 90;
+}
+
+// Pure campaign matcher: returns the members a campaign should reach right now.
+// Quiet mode always wins; a member is skipped while inside this campaign's cooldown.
+export function matchCampaign(campaign: any, input: {
+  members: Row[]; events: Row[]; nudges: Row[]; now: number;
+}): Array<{ member: Row; friendName?: string }> {
+  const { members, events, nudges, now } = input;
+  const days = Number(campaign.days) || 0;
+  const cooldownMs = (Number(campaign.cooldownDays) || 7) * DAY_MS;
+  const last = new Map<string, number>();
+  for (const e of events) {
+    if ((last.get(e.memberId) ?? 0) < e.createdAt) last.set(e.memberId, e.createdAt);
+  }
+  const cooled = (memberId: string) => nudges.some(n =>
+    n.memberId === memberId && n.campaignId === campaign.id && now - (n.createdAt ?? 0) < cooldownMs);
+  const eligible = members.filter(m => !m.quiet && !cooled(m.id));
+
+  if (campaign.trigger === 'everyone') {
+    return eligible.map(member => ({ member }));
+  }
+  if (campaign.trigger === 'stalled') {
+    const th = (days || STALLED_DAYS) * DAY_MS;
+    return eligible
+      .filter(m => now - (last.get(m.id) ?? m.joinedAt ?? 0) >= th)
+      .map(member => ({ member }));
+  }
+  if (campaign.trigger === 'new-member') {
+    const th = (days || 2) * DAY_MS;
+    return eligible.filter(m => now - (m.joinedAt ?? 0) <= th).map(member => ({ member }));
+  }
+  if (campaign.trigger === 'first-bloom') {
+    const th = (days || 1) * DAY_MS;
+    const out: Array<{ member: Row }> = [];
+    for (const m of eligible) {
+      const blooms = events.filter(e => e.memberId === m.id && e.type === 'bloom')
+        .sort((a, b) => a.createdAt - b.createdAt);
+      if (blooms.length && now - blooms[0].createdAt <= th) out.push({ member: m });
+    }
+    return out;
+  }
+  if (campaign.trigger === 'struggle-unsupported') {
+    const thMs = (days || 2) * DAY_MS;
+    const out: Array<{ member: Row; friendName?: string }> = [];
+    const taken = new Set<string>();
+    for (const e of events) {
+      if (e.type !== 'struggle') continue;
+      const age = now - e.createdAt;
+      if (age < thMs || age > 7 * DAY_MS) continue;
+      const supported = events.some(x => x.circleId === e.circleId && x.createdAt > e.createdAt
+        && (x.type === 'recover'
+          || (x.type === 'cheer' && x.payload && x.payload.toMemberId === e.memberId)));
+      if (supported) continue;
+      const struggler = members.find(x => x.id === e.memberId);
+      const mate = eligible.find(x => x.circleId === e.circleId && x.id !== e.memberId && !taken.has(x.id));
+      if (mate && struggler) {
+        taken.add(mate.id);
+        out.push({ member: mate, friendName: struggler.name });
+      }
+    }
+    return out;
+  }
+  return [];
+}
+
+export function renderTemplate(template: string, names: { name?: string; friend?: string }): string {
+  return clamp(template, 240)
+    .split('{name}').join(names.name || 'friend')
+    .split('{friend}').join(names.friend || 'a friend');
+}
+
+export const DEFAULT_FLAGS = { whisperer: true, newCircles: true, banner: '' };
+
+export const DEFAULT_CAMPAIGNS = [
+  {
+    name: 'Quiet gardens', trigger: 'stalled', days: 7, channels: ['note'],
+    template: 'The grove kept your place, {name}. One tiny step is all a garden ever asks.',
+    cooldownDays: 7, active: true,
+  },
+  {
+    name: 'Sunshine call', trigger: 'struggle-unsupported', days: 2, channels: ['note'],
+    template: '{friend} is having a heavy week. A little of your sunshine would mean a lot.',
+    cooldownDays: 7, active: true,
+  },
+];
 
 // ---------- phase 4: grove keeper (admin) helpers ----------
 

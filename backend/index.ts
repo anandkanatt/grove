@@ -3,15 +3,19 @@
 // (returned once, held on-device); every write presents memberId + memberKey.
 import {
   router, json, error, db, invites, isInviteError, ai,
+  storage, notifications, secrets,
   requireAuth, requireAdminEmailAllowlist,
 } from '@appdeploy/sdk';
 import {
   GROVE_TONE, STEPS_SCHEMA, REPLIES_SCHEMA, HISTORY_CAP, MAX_REAL_MEMBERS,
   todayKey, clamp, capExceeded, validEvent, oneLine,
   stepsPrompt, cheerPrompt, repliesPrompt, insightsPrompt,
-  SENTIMENT_LABELS, STALLED_DAYS, STRUGGLE_UNSUPPORTED_HOURS, NUDGE_COOLDOWN_DAYS,
-  DAY_MS, pickNudge, memberLastSeen, buildOverview, buildInterventions,
+  SENTIMENT_LABELS, DAY_MS, buildOverview, buildInterventions,
   GOAL_DOMAINS, GOAL_IDEAS_SCHEMA, goalIdeasPrompt, transcribePrompt,
+  MESSAGE_CAP, MENTOR_ID, MENTOR_TONES, validTextMessage,
+  mentorSystem, mentorChatPrompt, ASSESS_SCHEMA, assessPrompt,
+  CAMPAIGN_CHANNELS, validCampaign, matchCampaign, renderTemplate,
+  DEFAULT_FLAGS, DEFAULT_CAMPAIGNS,
 } from './grove';
 
 // The grove keeper's gate — explicit, real admin emails only.
@@ -90,8 +94,12 @@ async function makeMember(circleId: string, body: any) {
 }
 
 // Per-circle daily AI budget; the coach additionally caps per member.
+// The keeper can raise or lower a circle's cap via circles.aiCapOverride.
 async function aiAllowed(circleId: string, memberId: string, isCoach: boolean) {
   const day = todayKey(Date.now());
+  const [circleRow] = await db.get<Record<string, any>>('circles', [circleId]);
+  const circleCap = circleRow && Number(circleRow.aiCapOverride) > 0
+    ? Number(circleRow.aiCapOverride) : undefined;
   const rows = await listAll('aiUsage', { circleId, day });
   let row = rows[0];
   if (!row) {
@@ -99,7 +107,7 @@ async function aiAllowed(circleId: string, memberId: string, isCoach: boolean) {
     if (!id) return false;
     row = { id, circleId, day, count: 0, byMember: {} };
   }
-  if (capExceeded(row, memberId, isCoach)) return false;
+  if (capExceeded(row, memberId, isCoach, circleCap)) return false;
   const byMember = { ...(row.byMember ?? {}) };
   byMember[memberId] = (byMember[memberId] ?? 0) + 1;
   await db.update('aiUsage', [{
@@ -109,14 +117,75 @@ async function aiAllowed(circleId: string, memberId: string, isCoach: boolean) {
   return true;
 }
 
+// Feature flags: one row in the flags table, defaults when absent.
+async function readFlags() {
+  const rows = await listAll('flags', {});
+  return { ...DEFAULT_FLAGS, ...(rows[0] || {}) };
+}
+async function writeFlags(next: Record<string, unknown>) {
+  const rows = await listAll('flags', {});
+  const record = {
+    whisperer: next.whisperer !== false,
+    newCircles: next.newCircles !== false,
+    banner: clamp(next.banner, 160),
+  };
+  if (rows[0]) await db.update('flags', [{ id: rows[0].id, record }]);
+  else await db.add('flags', [record]);
+  return record;
+}
+
+// Every admin mutation leaves a trace the keeper can read back.
+async function audit(email: string | undefined, action: string, target: string, detail?: string) {
+  await db.add('adminAudit', [{
+    at: Date.now(), email: email || 'unknown',
+    action: clamp(action, 60), target: clamp(target, 80), detail: clamp(detail, 200),
+  }]);
+}
+
+const ADMIN = [requireAuth(), requireAdminEmailAllowlist(ADMIN_EMAILS)];
+
 // Shared guard for AI routes: body carries {circleId, memberId, memberKey}.
 async function aiGuard(ctx: any, isCoach: boolean) {
   const b = ctx.body as any;
   const member = await getMember(b?.circleId, b?.memberId, b?.memberKey);
   if (!member) return error('unauthorized', 401);
+  const flags = await readFlags();
+  if (!flags.whisperer) return error('ai-off', 503);
   if (!(await aiAllowed(b.circleId, b.memberId, isCoach))) return error('ai-rest', 429);
   return null;
 }
+
+// ---------- circle chat (messages live beside, not inside, the event log) ----------
+
+async function circleMessages(circleId: string) {
+  const items = await listAll('messages', { circleId });
+  return items.sort((a, b) =>
+    (a.createdAt - b.createdAt) || String(a.id).localeCompare(String(b.id)));
+}
+
+async function addMessage(circle: Record<string, any> & { id: string },
+  memberId: string, fields: Record<string, unknown>) {
+  const at = Math.max(Date.now(), (circle.lastMsgAt ?? 0) + 1);
+  circle.lastMsgAt = at;
+  await db.update('circles', [{ id: circle.id, record: { ...circle, id: undefined, lastMsgAt: at } }]);
+  const [id] = await db.add('messages', [{ circleId: circle.id, memberId, createdAt: at, ...fields }]);
+  return { id, createdAt: at };
+}
+
+async function pruneMessages(circleId: string) {
+  const all = await circleMessages(circleId);
+  if (all.length > MESSAGE_CAP) {
+    const drop = all.slice(0, all.length - MESSAGE_CAP);
+    const voicePaths = drop.filter(m => m.audioPath).map(m => String(m.audioPath));
+    if (voicePaths.length) await storage.delete(voicePaths);
+    await db.delete('messages', drop.map(m => m.id));
+  }
+}
+
+const publicMessage = (m: Record<string, any>) => ({
+  id: m.id, memberId: m.memberId, kind: m.kind,
+  text: m.text, audioPath: m.audioPath, createdAt: m.createdAt,
+});
 
 async function generate(opts: Record<string, unknown>) {
   return ai.generate({
@@ -134,6 +203,8 @@ export const handler = router({
   'GET /api/_healthcheck': [async () => json({ message: 'Success' })],
 
   'POST /api/circles': [async (ctx) => {
+    const flags = await readFlags();
+    if (!flags.newCircles) return error('circles-paused', 503);
     const b = ctx.body as any;
     const name = clamp(b?.name, 40) || 'Our Grove';
     const [circleId] = await db.add('circles', [{ name, createdAt: Date.now(), lastEventAt: 0 }]);
@@ -144,6 +215,8 @@ export const handler = router({
     const created = await invites.create({
       resourceType: 'circle', authMode: 'anonymous', context: { circleId },
     });
+    const [fresh] = await db.get<Record<string, any>>('circles', [circleId]);
+    if (fresh) await db.update('circles', [{ id: circleId, record: { ...fresh, id: undefined, inviteCode: created.code } }]);
     return json({
       circleId, circleName: name, inviteCode: created.code,
       memberId: member.id, memberKey: member.memberKey,
@@ -227,6 +300,138 @@ export const handler = router({
 
   // ---------- the whisperer ----------
 
+  // ---------- circle chat + voice notes (phase 5) ----------
+
+  'GET /api/circles/:id/messages': [async (ctx) => {
+    const member = await getMember(ctx.params.id, ctx.query.memberId, ctx.query.memberKey);
+    if (!member) return error('unauthorized', 401);
+    const since = Number(ctx.query.since) || 0;
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    const msgs = (await circleMessages(ctx.params.id))
+      .filter(m => m.createdAt > since)
+      .slice(-100)
+      .map(publicMessage);
+    return json({ messages: msgs, mentor: (circle && circle.mentor) || null });
+  }],
+
+  'POST /api/circles/:id/messages': [async (ctx) => {
+    const b = ctx.body as any;
+    const member = await getMember(ctx.params.id, b?.memberId, b?.memberKey);
+    if (!member) return error('unauthorized', 401);
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    if (!circle) return error('not-found', 404);
+    let fields: Record<string, unknown>;
+    if (b?.kind === 'voice') {
+      const audio = typeof b.audio === 'string' ? b.audio : '';
+      const mimeType = clamp(b.mimeType, 40);
+      if (!audio || audio.length > 1400000 || mimeType.indexOf('audio/') !== 0) {
+        return error('bad-audio', 400);
+      }
+      const path = `voice/${ctx.params.id}/${crypto.randomUUID()}`;
+      const [ok] = await storage.write([{ path, content: audio, contentType: mimeType }]);
+      if (!ok) return error('storage-failed', 500);
+      fields = { kind: 'voice', audioPath: path };
+    } else {
+      const text = clamp(b?.text, 500);
+      if (!validTextMessage(text)) return error('empty-message', 400);
+      fields = { kind: 'text', text };
+    }
+    const { id, createdAt } = await addMessage({ ...circle, id: ctx.params.id }, member.id, fields);
+    await pruneMessages(ctx.params.id);
+    return json({ message: { id, memberId: member.id, createdAt, ...fields } });
+  }],
+
+  // Signed playback URL for a voice note; path is pinned to this circle.
+  'GET /api/circles/:id/voice-url': [async (ctx) => {
+    const member = await getMember(ctx.params.id, ctx.query.memberId, ctx.query.memberKey);
+    if (!member) return error('unauthorized', 401);
+    const path = String(ctx.query.path || '');
+    if (path.indexOf(`voice/${ctx.params.id}/`) !== 0) return error('not-found', 404);
+    const [{ url }] = await storage.url([path]);
+    return json({ url });
+  }],
+
+  // ---------- the circle's AI mentor (phase 5a) ----------
+
+  'POST /api/circles/:id/mentor': [async (ctx) => {
+    const b = ctx.body as any;
+    const member = await getMember(ctx.params.id, b?.memberId, b?.memberKey);
+    if (!member) return error('unauthorized', 401);
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    if (!circle) return error('not-found', 404);
+    let mentor: Record<string, unknown> | null = null;
+    if (!b?.remove) {
+      const tone = MENTOR_TONES.indexOf(b?.tone) !== -1 ? b.tone : 'gentle';
+      mentor = { name: clamp(b?.name, 30) || 'Sage', avatarId: clamp(b?.avatarId, 4) || '2', tone, enabledAt: Date.now() };
+    }
+    await db.update('circles', [{ id: ctx.params.id, record: { ...circle, id: undefined, mentor } }]);
+    if (mentor) {
+      await addMessage({ ...circle, id: ctx.params.id, mentor }, MENTOR_ID,
+        { kind: 'text', text: `${mentor.name} settled in as your mentor. Ask me anything about your plans 🌿` });
+    }
+    return json({ mentor });
+  }],
+
+  'POST /api/circles/:id/mentor-chat': [async (ctx) => {
+    const b = ctx.body as any;
+    const member = await getMember(ctx.params.id, b?.memberId, b?.memberKey);
+    if (!member) return error('unauthorized', 401);
+    const flags = await readFlags();
+    if (!flags.whisperer) return error('ai-off', 503);
+    if (!(await aiAllowed(ctx.params.id, member.id, false))) return error('ai-rest', 429);
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    if (!circle || !circle.mentor) return error('no-mentor', 400);
+    const question = clamp(b?.question, 400);
+    if (!question) return error('empty-message', 400);
+    const asked = await addMessage({ ...circle, id: ctx.params.id }, member.id,
+      { kind: 'text', text: question, toMentor: true });
+    try {
+      const history = (await circleMessages(ctx.params.id))
+        .filter(m => m.kind === 'text')
+        .slice(-13, -1)
+        .map(m => ({ from: m.memberId === MENTOR_ID ? String(circle.mentor.name) : 'member', text: String(m.text || '') }));
+      const goals = Array.isArray(b?.goals) ? b.goals.slice(0, 4).map((g: unknown) => clamp(g, 45)) : [];
+      const r = await ai.generate({
+        system: mentorSystem(circle.mentor),
+        prompt: mentorChatPrompt({ history, goals, asker: member.name, question }),
+        maxTokens: 220, temperature: 0.7, thinkingMode: 'NONE',
+      });
+      const replyText = clamp(r.text, 400).replace(/\s+/g, ' ').trim();
+      if (!replyText) return error('ai-unavailable', 502);
+      const reply = await addMessage({ ...circle, id: ctx.params.id, lastMsgAt: asked.createdAt }, MENTOR_ID,
+        { kind: 'text', text: replyText });
+      await pruneMessages(ctx.params.id);
+      return json({ reply: { id: reply.id, memberId: MENTOR_ID, kind: 'text', text: replyText, createdAt: reply.createdAt } });
+    } catch (err) {
+      console.error('mentor chat failed', err);
+      return error('ai-unavailable', 502);
+    }
+  }],
+
+  'POST /api/ai/assess': [async (ctx) => {
+    const guard = await aiGuard(ctx, true);
+    if (guard) return guard;
+    const b = ctx.body as any;
+    const goalName = clamp(b?.goalName, 45);
+    const steps = Array.isArray(b?.steps) ? b.steps.map((s: unknown) => clamp(s, 90)).filter(Boolean) : [];
+    if (!goalName || !steps.length) return error('empty-plan', 400);
+    try {
+      const r = await generate({ prompt: assessPrompt(goalName, steps), schema: ASSESS_SCHEMA });
+      const parsed = JSON.parse(r.text);
+      const verdict = oneLine(String(parsed.verdict ?? ''), 160);
+      const suggestions = (parsed.suggestions || [])
+        .map((s: unknown) => oneLine(String(s), 90)).filter(Boolean).slice(0, 3);
+      if (!verdict || !suggestions.length) return error('ai-unavailable', 502);
+      return json({ verdict, suggestions });
+    } catch (err) {
+      console.error('ai assess failed', err);
+      return error('ai-unavailable', 502);
+    }
+  }],
+
+  // Public flags: banner + feature availability for every client.
+  'GET /api/flags': [async () => json(await readFlags())],
+
   // ---------- accounts & backups (phase 4) ----------
 
   'POST /api/account/link': [requireAuth(), async (ctx) => {
@@ -303,7 +508,225 @@ export const handler = router({
       circleId: member.circleId, memberId: String(b.memberId), text,
       source: 'manual', day: todayKey(Date.now()), createdAt: Date.now(), deliveredAt: 0,
     }]);
+    await audit(ctx.user!.email, 'nudge.manual', String(b.memberId), text.slice(0, 60));
     return json({ ok: true });
+  }],
+
+  // ---------- keeper's studio: campaign workflows ----------
+
+  'GET /api/admin/campaigns': [...ADMIN, async () => {
+    const rows = await listAll('campaigns', {});
+    return json({ campaigns: rows.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)) });
+  }],
+
+  'POST /api/admin/campaigns': [...ADMIN, async (ctx) => {
+    const b = ctx.body as any;
+    if (!validCampaign(b)) return error('invalid-campaign', 400);
+    const record = {
+      name: clamp(b.name, 40), trigger: b.trigger, days: Number(b.days) || 0,
+      channels: b.channels.filter((c: string) => CAMPAIGN_CHANNELS.indexOf(c) !== -1),
+      template: clamp(b.template, 240), cooldownDays: Number(b.cooldownDays) || 7,
+      active: b.active !== false, createdAt: Date.now(), lastRunAt: 0, sentCount: 0,
+    };
+    const [id] = await db.add('campaigns', [record]);
+    if (!id) return error('save-failed', 500);
+    await audit(ctx.user!.email, 'campaign.create', record.name, record.trigger);
+    return json({ campaign: { ...record, id } });
+  }],
+
+  'PUT /api/admin/campaigns/:id': [...ADMIN, async (ctx) => {
+    const b = ctx.body as any;
+    const [row] = await db.get<Record<string, any>>('campaigns', [ctx.params.id]);
+    if (!row) return error('not-found', 404);
+    const merged = { ...row, ...b, id: undefined };
+    if (!validCampaign(merged)) return error('invalid-campaign', 400);
+    await db.update('campaigns', [{ id: ctx.params.id, record: merged }]);
+    await audit(ctx.user!.email, 'campaign.update', String(merged.name), merged.active ? 'active' : 'paused');
+    return json({ ok: true });
+  }],
+
+  'DELETE /api/admin/campaigns/:id': [...ADMIN, async (ctx) => {
+    const [row] = await db.get<Record<string, any>>('campaigns', [ctx.params.id]);
+    if (!row) return error('not-found', 404);
+    await db.delete('campaigns', [ctx.params.id]);
+    await audit(ctx.user!.email, 'campaign.delete', String(row.name));
+    return json({ ok: true });
+  }],
+
+  'POST /api/admin/campaigns/:id/run': [...ADMIN, async (ctx) => {
+    const [row] = await db.get<Record<string, any>>('campaigns', [ctx.params.id]);
+    if (!row) return error('not-found', 404);
+    const result = await executeCampaign({ ...row, id: ctx.params.id }, Date.now());
+    await audit(ctx.user!.email, 'campaign.run', String(row.name),
+      `matched ${result.matched}, sent ${result.sent}`);
+    return json(result);
+  }],
+
+  'GET /api/admin/campaigns/:id/log': [...ADMIN, async (ctx) => {
+    const rows = await listAll('nudges', { campaignId: ctx.params.id });
+    return json({
+      log: rows.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 50)
+        .map(n => ({ text: n.text, createdAt: n.createdAt, deliveredAt: n.deliveredAt, channel: n.channel || 'note' })),
+    });
+  }],
+
+  'GET /api/admin/channels': [...ADMIN, async () => {
+    const names = await secrets.listSecretNames();
+    return json({
+      note: 'ready',
+      push: 'ready for claimed accounts',
+      email: names.indexOf('RESEND_API_KEY') !== -1 ? 'key present — adapter pending' : 'needs provider key (RESEND_API_KEY)',
+      whatsapp: names.indexOf('WHATSAPP_TOKEN') !== -1 ? 'key present — adapter pending' : 'needs provider key (WHATSAPP_TOKEN)',
+    });
+  }],
+
+  // ---------- keeper ops: browse, moderate, intervene ----------
+
+  'GET /api/admin/circles': [...ADMIN, async () => {
+    const [circles, members, events, usage] = await Promise.all([
+      listAll('circles', {}), listAll('members', {}), listAll('events', {}), listAll('aiUsage', {}),
+    ]);
+    const today = todayKey(Date.now());
+    const lastByCircle = new Map<string, number>();
+    for (const e of events) {
+      if ((lastByCircle.get(e.circleId) ?? 0) < e.createdAt) lastByCircle.set(e.circleId, e.createdAt);
+    }
+    return json({
+      circles: circles.map(c => ({
+        id: c.id, name: c.name, createdAt: c.createdAt,
+        members: members.filter(m => m.circleId === c.id).length,
+        lastEventAt: lastByCircle.get(c.id) || c.createdAt,
+        mentor: c.mentor ? c.mentor.name : null,
+        aiToday: usage.filter(u => u.circleId === c.id && u.day === today)
+          .reduce((s, u) => s + (u.count ?? 0), 0),
+        aiCapOverride: c.aiCapOverride || null,
+      })).sort((a, b) => b.lastEventAt - a.lastEventAt),
+    });
+  }],
+
+  'GET /api/admin/circles/:id': [...ADMIN, async (ctx) => {
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    if (!circle) return error('not-found', 404);
+    const [members, events, msgs] = await Promise.all([
+      circleMembers(ctx.params.id), circleEvents(ctx.params.id), circleMessages(ctx.params.id),
+    ]);
+    const last = new Map<string, number>();
+    for (const e of events) {
+      if ((last.get(e.memberId) ?? 0) < e.createdAt) last.set(e.memberId, e.createdAt);
+    }
+    return json({
+      circle: {
+        id: ctx.params.id, name: circle.name, createdAt: circle.createdAt,
+        mentor: circle.mentor || null, inviteCode: circle.inviteCode || null,
+        aiCapOverride: circle.aiCapOverride || null,
+      },
+      members: members.map(m => ({
+        id: m.id, name: m.name, avatarId: m.avatarId, quiet: !!m.quiet,
+        claimed: !!m.userId, joinedAt: m.joinedAt, lastSeen: last.get(m.id) || m.joinedAt,
+      })),
+      counts: { events: events.length, messages: msgs.length },
+    });
+  }],
+
+  'POST /api/admin/circles/:id/regen-invite': [...ADMIN, async (ctx) => {
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    if (!circle) return error('not-found', 404);
+    if (circle.inviteCode) {
+      try { await invites.revoke({ code: String(circle.inviteCode) }); } catch (err) { /* already gone */ }
+    }
+    const created = await invites.create({
+      resourceType: 'circle', authMode: 'anonymous', context: { circleId: ctx.params.id },
+    });
+    await db.update('circles', [{ id: ctx.params.id, record: { ...circle, id: undefined, inviteCode: created.code } }]);
+    await audit(ctx.user!.email, 'circle.regen-invite', String(circle.name));
+    return json({ inviteCode: created.code });
+  }],
+
+  'POST /api/admin/members/:id/remove': [...ADMIN, async (ctx) => {
+    const [member] = await db.get<Record<string, any>>('members', [ctx.params.id]);
+    if (!member) return error('not-found', 404);
+    const [circle] = await db.get<Record<string, any>>('circles', [String(member.circleId)]);
+    if (circle) {
+      await addEvent({ ...circle, id: String(member.circleId) }, ctx.params.id,
+        crypto.randomUUID(), 'leave', { name: member.name });
+    }
+    await db.delete('members', [ctx.params.id]);
+    await audit(ctx.user!.email, 'member.remove', String(member.name), String(member.circleId));
+    return json({ ok: true });
+  }],
+
+  'POST /api/admin/circles/:id/purge': [...ADMIN, async (ctx) => {
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    if (!circle) return error('not-found', 404);
+    const [members, events, msgs, nudgeRows] = await Promise.all([
+      listAll('members', { circleId: ctx.params.id }), listAll('events', { circleId: ctx.params.id }),
+      listAll('messages', { circleId: ctx.params.id }), listAll('nudges', { circleId: ctx.params.id }),
+    ]);
+    const { paths } = await storage.list({ prefix: `voice/${ctx.params.id}/`, limit: 500 });
+    if (paths.length) await storage.delete(paths);
+    if (events.length) await db.delete('events', events.map(e => e.id));
+    if (msgs.length) await db.delete('messages', msgs.map(m => m.id));
+    if (nudgeRows.length) await db.delete('nudges', nudgeRows.map(n => n.id));
+    if (members.length) await db.delete('members', members.map(m => m.id));
+    await db.delete('circles', [ctx.params.id]);
+    await audit(ctx.user!.email, 'circle.purge', String(circle.name),
+      `${members.length} members, ${events.length} events, ${msgs.length} messages`);
+    return json({ ok: true });
+  }],
+
+  'DELETE /api/admin/messages/:id': [...ADMIN, async (ctx) => {
+    const [msg] = await db.get<Record<string, any>>('messages', [ctx.params.id]);
+    if (!msg) return error('not-found', 404);
+    if (msg.audioPath) await storage.delete([String(msg.audioPath)]);
+    await db.delete('messages', [ctx.params.id]);
+    await audit(ctx.user!.email, 'message.delete', ctx.params.id, String(msg.kind));
+    return json({ ok: true });
+  }],
+
+  'DELETE /api/admin/events/:id': [...ADMIN, async (ctx) => {
+    const [ev] = await db.get<Record<string, any>>('events', [ctx.params.id]);
+    if (!ev) return error('not-found', 404);
+    await db.delete('events', [ctx.params.id]);
+    await audit(ctx.user!.email, 'event.delete', ctx.params.id, String(ev.type));
+    return json({ ok: true });
+  }],
+
+  'POST /api/admin/circles/:id/ai': [...ADMIN, async (ctx) => {
+    const b = ctx.body as any;
+    const [circle] = await db.get<Record<string, any>>('circles', [ctx.params.id]);
+    if (!circle) return error('not-found', 404);
+    if (b?.resetToday) {
+      const rows = await listAll('aiUsage', { circleId: ctx.params.id, day: todayKey(Date.now()) });
+      for (const r of rows) {
+        await db.update('aiUsage', [{ id: r.id, record: { ...r, id: undefined, count: 0, byMember: {} } }]);
+      }
+    }
+    if ('capOverride' in (b || {})) {
+      const cap = Number(b.capOverride);
+      await db.update('circles', [{
+        id: ctx.params.id,
+        record: { ...circle, id: undefined, aiCapOverride: cap > 0 ? Math.min(cap, 500) : null },
+      }]);
+    }
+    await audit(ctx.user!.email, 'circle.ai', String(circle.name),
+      `${b?.resetToday ? 'reset today; ' : ''}cap ${b?.capOverride ?? 'unchanged'}`);
+    return json({ ok: true });
+  }],
+
+  'GET /api/admin/flags': [...ADMIN, async () => json(await readFlags())],
+
+  'PUT /api/admin/flags': [...ADMIN, async (ctx) => {
+    const next = await writeFlags(ctx.body as Record<string, unknown>);
+    await audit(ctx.user!.email, 'flags.update', '',
+      `whisperer=${next.whisperer} newCircles=${next.newCircles} banner=${next.banner ? 'set' : 'clear'}`);
+    return json(next);
+  }],
+
+  'GET /api/admin/audit': [...ADMIN, async () => {
+    const rows = await listAll('adminAudit', {});
+    return json({
+      audit: rows.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, 100),
+    });
   }],
 
   'POST /api/ai/steps': [async (ctx) => {
@@ -481,49 +904,76 @@ export const groveKeeperDaily = async (_event: unknown) => {
     console.warn('sentiment pass skipped', err);
   }
 
-  // -- workflow nudges --
-  const lastSeen = new Map<string, number>();
-  for (const e of events) {
-    if ((lastSeen.get(e.memberId) ?? 0) < e.createdAt) lastSeen.set(e.memberId, e.createdAt);
-  }
-  const recentlyNudged = (memberId: string) => nudges.some(n =>
-    n.memberId === memberId && n.source === 'workflow'
-    && now - (n.createdAt ?? 0) < NUDGE_COOLDOWN_DAYS * DAY_MS);
-  const addNudge = async (memberId: string, circleId: string, text: string) => {
-    await db.add('nudges', [{
-      circleId, memberId, text, source: 'workflow',
-      day: today, createdAt: now, deliveredAt: 0,
-    }]);
-  };
-
+  // -- campaign workflows (the built-in nudges are just the two seeded defaults) --
+  await ensureDefaultCampaigns();
+  const campaigns = await listAll('campaigns', {});
   let sent = 0;
-  for (const m of members) {
-    if (m.quiet) continue;
-    const seen = lastSeen.get(m.id) ?? m.joinedAt ?? 0;
-    if (now - seen < STALLED_DAYS * DAY_MS) continue;
-    if (recentlyNudged(m.id)) continue;
-    await addNudge(m.id, m.circleId, pickNudge('stalled', { name: m.name }, seen + m.id.length));
-    sent += 1;
+  for (const c of campaigns) {
+    if (!c.active) continue;
+    const result = await executeCampaign(c, now);
+    sent += result.sent;
   }
 
-  for (const e of events) {
-    if (e.type !== 'struggle') continue;
-    const ageHours = (now - e.createdAt) / 3600000;
-    if (ageHours < STRUGGLE_UNSUPPORTED_HOURS || ageHours > 7 * 24) continue;
-    const supported = events.some(x => x.circleId === e.circleId && x.createdAt > e.createdAt
-      && (x.type === 'recover'
-        || (x.type === 'cheer' && x.payload && x.payload.toMemberId === e.memberId)));
-    if (supported) continue;
-    const struggler = members.find(x => x.id === e.memberId);
-    const mates = members.filter(x => x.circleId === e.circleId && x.id !== e.memberId
-      && !x.quiet && !recentlyNudged(x.id));
-    const mate = mates[0];
-    if (!mate || !struggler) continue;
-    await addNudge(mate.id, e.circleId,
-      pickNudge('struggle', { friend: struggler.name }, e.createdAt));
-    sent += 1;
-  }
-
-  console.log(`grove keeper round: ${sent} nudge(s), ${circles.length} circle(s)`);
+  console.log(`grove keeper round: ${sent} note(s), ${circles.length} circle(s), ${campaigns.length} campaign(s)`);
   return { statusCode: 200 };
 };
+
+// Seed the two classic keeper behaviors as editable campaigns, exactly once.
+async function ensureDefaultCampaigns() {
+  const existing = await listAll('campaigns', {});
+  if (existing.length) return;
+  for (const c of DEFAULT_CAMPAIGNS) {
+    await db.add('campaigns', [{ ...c, createdAt: Date.now(), lastRunAt: 0, sentCount: 0 }]);
+  }
+}
+
+// Run one campaign now: match members, deliver on each channel, log every send.
+async function executeCampaign(campaign: Record<string, any>, now: number) {
+  const [members, events, nudges] = await Promise.all([
+    listAll('members', {}), listAll('events', {}), listAll('nudges', {}),
+  ]);
+  const targets = matchCampaign(campaign, { members, events, nudges, now });
+  const channels: string[] = Array.isArray(campaign.channels) ? campaign.channels : ['note'];
+  let sent = 0, pushSkipped = 0;
+  for (const t of targets) {
+    const text = renderTemplate(String(campaign.template),
+      { name: t.member.name, friend: t.friendName });
+    if (channels.indexOf('note') !== -1) {
+      await db.add('nudges', [{
+        circleId: t.member.circleId, memberId: t.member.id, text,
+        source: 'workflow', campaignId: campaign.id, channel: 'note',
+        day: todayKey(now), createdAt: now, deliveredAt: 0,
+      }]);
+      sent += 1;
+    }
+    if (channels.indexOf('push') !== -1) {
+      if (t.member.userId) {
+        try {
+          await notifications.send({
+            userIds: [String(t.member.userId)],
+            notification: { title: 'A note from your grove 🌿', body: text },
+            data: { kind: 'keeper-note' },
+          });
+          await db.add('nudges', [{
+            circleId: t.member.circleId, memberId: t.member.id, text,
+            source: 'workflow', campaignId: campaign.id, channel: 'push',
+            day: todayKey(now), createdAt: now, deliveredAt: now,
+          }]);
+          sent += 1;
+        } catch (err) {
+          console.warn('push send failed', err);
+        }
+      } else {
+        pushSkipped += 1;
+      }
+    }
+  }
+  await db.update('campaigns', [{
+    id: campaign.id,
+    record: {
+      ...campaign, id: undefined,
+      lastRunAt: now, sentCount: (campaign.sentCount ?? 0) + sent,
+    },
+  }]);
+  return { matched: targets.length, sent, pushSkipped };
+}
