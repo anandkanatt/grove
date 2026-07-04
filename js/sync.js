@@ -34,16 +34,26 @@ GroveSync.makeSync = function (opts) {
 
   async function doSync() {
     const st = ctx.state;
-    if (!st.net.circle || !client) return { ok: false, changed: false };
+    const circle = st.net.circle; // captured once: awaits below race leaveCircleFlow
+    if (!circle || !client) return { ok: false, changed: false };
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     status = 'syncing';
     let changed = false;
+
+    // The player can leave (or swap) her circle while a request is in the
+    // air; main.js nulls state.net.circle mid-tick. After every await, bail
+    // before touching state if this tick's circle is no longer the live one —
+    // late replies (typically a 401, her member row is already gone) belong
+    // to a circle she has left and must not be folded in or marked offline.
+    const stale = () => ctx.state.net.circle !== circle;
+    const bail = () => { status = 'idle'; return { ok: false, changed: false }; };
 
     // Flush: send a snapshot; only remove exactly what was sent, so events
     // queued while the request is in the air survive to the next cycle.
     if (st.net.outbox.length) {
       const batch = st.net.outbox.slice();
-      const pr = await client.pushEvents(st.net.circle.id, st.net.circle.memberId, batch);
+      const pr = await client.pushEvents(circle.id, circle.memberId, batch);
+      if (stale()) return bail();
       if (!pr.ok) { status = 'offline'; ctx.save(); return { ok: false, changed }; }
       const sent = new Set(batch.map(e => e.client_key));
       st.net.outbox = st.net.outbox.filter(e => !sent.has(e.client_key));
@@ -51,18 +61,20 @@ GroveSync.makeSync = function (opts) {
     }
 
     // Pull everything after the cursor and fold it in.
-    const pull = await client.pullEvents(st.net.circle.id, st.net.cursor);
+    const pull = await client.pullEvents(circle.id, st.net.cursor);
+    if (stale()) return bail();
     if (!pull.ok) { status = 'offline'; ctx.save(); return { ok: false, changed }; }
     // Membership changed inside this batch? Refresh the cache BEFORE
     // classifying, so events from a brand-new member carry her name.
     if (pull.events.some(e => e.type === 'join' || e.type === 'leave')) {
-      const mr = await client.fetchMembers(st.net.circle.id);
+      const mr = await client.fetchMembers(circle.id);
+      if (stale()) return bail();
       if (mr.ok) {
         st.net.members = mr.members;
         Social.syncSpiritSlots(st, D);
       }
     }
-    const report = Social.applyRemote(st, D, pull.events, st.net.circle.memberId);
+    const report = Social.applyRemote(st, D, pull.events, circle.memberId);
 
     for (const item of report.feedItems) st.circle.feed.push(item);
     if (st.circle.feed.length > 80) st.circle.feed = st.circle.feed.slice(-80);
