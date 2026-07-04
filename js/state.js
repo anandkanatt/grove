@@ -23,7 +23,7 @@ function defaultNet() {
 
 GroveState.defaultState = function (now) {
   return {
-    version: 3,
+    version: 4,
     player: { name: '', avatarId: 0, accentId: 0, createdAt: now },
     xp: 0,
     petals: 0,
@@ -48,12 +48,14 @@ GroveState.defaultState = function (now) {
     net: defaultNet(),
     aiConsent: { enabled: false, notedAt: null },   // whisperer opt-in
     dailyWhisper: { day: null, text: null },        // cached daily AI affirmation
+    voice: { name: null },                          // speech voice pref (null = auto)
   };
 };
 
 // Migration chain: v1 gains the net block and per-goal privacy flag (v2);
-// v2 gains platform/memberKey and the whisperer fields (v3). Missing keys are
-// refilled at every step so partial/older exports stay loadable.
+// v2 gains platform/memberKey and the whisperer fields (v3); v3 gains the
+// speech voice preference (v4). Missing keys are refilled at every step so
+// partial/older exports stay loadable.
 GroveState.migrate = function (raw) {
   if (raw.version === 1) raw.version = 2;
   if (!raw.net || typeof raw.net !== 'object') raw.net = defaultNet();
@@ -71,12 +73,16 @@ GroveState.migrate = function (raw) {
   if (!raw.dailyWhisper || typeof raw.dailyWhisper !== 'object') {
     raw.dailyWhisper = { day: null, text: null };
   }
+  if (raw.version === 3) raw.version = 4;
+  if (!raw.voice || typeof raw.voice !== 'object') {
+    raw.voice = { name: null };
+  }
   return raw;
 };
 
 function isValid(raw) {
   return !!raw && typeof raw === 'object'
-    && (raw.version === 1 || raw.version === 2 || raw.version === 3)
+    && (raw.version === 1 || raw.version === 2 || raw.version === 3 || raw.version === 4)
     && raw.player && typeof raw.player === 'object'
     && Array.isArray(raw.goals)
     && raw.streak && typeof raw.streak === 'object'

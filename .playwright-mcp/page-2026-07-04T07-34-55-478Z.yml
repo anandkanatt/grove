@@ -1,0 +1,44 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]: Grove🌿
+    - generic [ref=e4]:
+      - generic "0 xp — next level at 60" [ref=e5]:
+        - img [ref=e6]:
+          - generic [ref=e9]: "1"
+        - strong [ref=e10]: Seedling
+      - generic "Petals — spend them in the Shop" [ref=e11]:
+        - text: 🌸
+        - strong [ref=e12]: "0"
+      - generic "Days in a row with at least one step" [ref=e13]:
+        - text: 🔥
+        - strong [ref=e14]: "0"
+        - generic "Dew Shields protect your streak" [ref=e15]: 💧×1
+  - navigation "Main" [ref=e16]:
+    - button "Today" [ref=e17] [cursor=pointer]
+    - button "Garden" [ref=e18] [cursor=pointer]
+    - button "Circle" [ref=e19] [cursor=pointer]
+    - button "Challenge" [ref=e20] [cursor=pointer]
+    - button "Shop" [ref=e21] [cursor=pointer]
+    - button "More" [ref=e22] [cursor=pointer]
+  - main [ref=e23]:
+    - generic [ref=e24]:
+      - generic [ref=e25]:
+        - text: “Rest when you need to. Return because you want to.”
+        - button "Read the affirmation aloud" [ref=e26] [cursor=pointer]: 🔈
+      - generic [ref=e27]:
+        - generic [ref=e28]:
+          - heading "Hello, QA 🌤️" [level=2] [ref=e29]
+          - generic [ref=e30]: small steps, big garden
+        - generic [ref=e31]:
+          - 'button "Mark done: Write down three wins from the last six months" [ref=e32] [cursor=pointer]': ✓
+          - generic [ref=e33]:
+            - generic [ref=e34]: Write down three wins from the last six months
+            - generic [ref=e36]: Ask for what I'm worth
+        - generic [ref=e37]:
+          - 'button "Mark done: Find salary ranges for my role on two websites" [ref=e38] [cursor=pointer]': ✓
+          - generic [ref=e39]:
+            - generic [ref=e40]: Find salary ranges for my role on two websites
+            - generic [ref=e42]: Ask for what I'm worth
+      - button "🌱 Plant a new goal" [ref=e44] [cursor=pointer]
+  - generic:
+    - generic: 🍃 Your circle was busy while you were away — 4 updates in the feed.
