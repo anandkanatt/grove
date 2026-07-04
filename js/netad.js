@@ -252,10 +252,8 @@ GroveNetAppDeploy.makeClient = function (cfg) {
         return r.ok ? { ok: true, audit: r.data.audit } : r;
       },
     },
-  };
-};
 
-    // ---------- phase 4: accounts, keeper notes, admin ----------
+    // ---------- phase 4: accounts & keeper notes ----------
     // api.* auto-attaches the Bearer token once platform auth has signed in.
 
     auth: platform.auth || null,
@@ -292,18 +290,6 @@ GroveNetAppDeploy.makeClient = function (cfg) {
       if (!ref || !memberKey()) return { ok: true, notes: [] };
       const r = await get('/api/circles/' + ref.id + '/nudges?' + identityQuery());
       return r.ok ? { ok: true, notes: r.data.notes || [] } : r;
-    },
-
-    admin: {
-      overview: async () => {
-        const r = await get('/api/admin/overview');
-        return r.ok ? { ok: true, data: r.data } : r;
-      },
-      interventions: async () => {
-        const r = await get('/api/admin/interventions');
-        return r.ok ? { ok: true, data: r.data } : r;
-      },
-      nudge: async (memberId, text) => post('/api/admin/nudge', { memberId, text }),
     },
   };
 };
