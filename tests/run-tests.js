@@ -947,6 +947,55 @@ test('the shared feed stays capped at 80', async () => {
   assertEq(st.circle.feed.length, 80);
   sync.stop();
 });
+test('a tick in flight when the player leaves her circle bails cleanly', async () => {
+  const st = socialState();
+  const ctx = syncCtx(st);
+  const feedBefore = st.circle.feed.length;
+  const client = makeFakeClient({
+    pullEvents: async () => {
+      // leaveCircleFlow completes while the pull is in the air (main.js
+      // nulls the circle and resets the net block)...
+      st.net.circle = null; st.net.members = []; st.net.cursor = 0;
+      st.net.outbox = []; st.net.playerStruggle = null;
+      // ...and the batch that comes back carries her own leave event.
+      return { ok: true, cursor: 9, events: [row(9, 'me', 'leave', { name: 'Anu' })] };
+    },
+    // Her member row is already deleted, so the members endpoint 401s.
+    fetchMembers: async () => ({ ok: false, error: 'unauthorized' }),
+  });
+  const sync = Sync.makeSync({ ctx, client, logic: L, social: Social, data: D });
+  const r = await sync.syncNow(); // must resolve, not throw on the null circle
+  assertEq(r, { ok: false, changed: false });
+  assertEq(sync.status(), 'idle', 'an expected 401-after-leave is not offline');
+  assertEq(st.circle.feed.length, feedBefore, 'stale pull is not folded into the fresh state');
+  assertEq(st.net.cursor, 0, 'cursor stays reset');
+  assertEq(ctx.saveCount(), 0, 'a bailed tick has nothing to save');
+  sync.stop();
+});
+test('a leave landing during the members refresh bails before applyRemote', async () => {
+  const st = socialState();
+  const ctx = syncCtx(st);
+  const feedBefore = st.circle.feed.length;
+  const client = makeFakeClient({
+    pullEvents: async () => ({ ok: true, cursor: 9,
+      events: [row(9, 'me', 'leave', { name: 'Anu' })] }),
+    fetchMembers: async () => {
+      // leaveCircleFlow wins the race while the members request is in the
+      // air; her row is already deleted, so the endpoint answers 401.
+      st.net.circle = null; st.net.members = []; st.net.cursor = 0;
+      st.net.outbox = []; st.net.playerStruggle = null;
+      return { ok: false, error: 'unauthorized' };
+    },
+  });
+  const sync = Sync.makeSync({ ctx, client, logic: L, social: Social, data: D });
+  const r = await sync.syncNow(); // must resolve, not throw reading memberId
+  assertEq(r, { ok: false, changed: false });
+  assertEq(sync.status(), 'idle');
+  assertEq(st.circle.feed.length, feedBefore, 'the stale batch is discarded');
+  assertEq(st.net.cursor, 0, 'cursor stays reset');
+  assertEq(ctx.saveCount(), 0);
+  sync.stop();
+});
 
 // ---------- netad: appdeploy adapter ----------
 const NetAd = require('../js/netad.js');
