@@ -520,6 +520,15 @@ const GroveUI = {};
           ${Whisper().consentGranted(st)
             ? `<button class="btn small secondary" data-action="whisper-consent-revoke">Turn off</button>` : ''}
         </div>` : ''}
+        ${Whisper().speakAvailable() ? `
+        <div class="settings-row" style="margin-top:10px">
+          <span class="sub">Whisper voice:</span>
+          <select id="voice-select" class="text-input" style="max-width:250px;padding:6px 10px">
+            <option value="">Auto — warm female voice</option>
+            ${Whisper().listVoices().map(v => `<option value="${esc(v.name)}"${(st.voice || {}).name === v.name ? ' selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('')}
+          </select>
+          <button class="btn small secondary" data-action="voice-try">🔈 try</button>
+        </div>` : ''}
       </div>`;
   }
 
@@ -1043,25 +1052,48 @@ const GroveUI = {};
     });
   }
 
+  // Every way the mic can fail gets a warm, specific note — silence is how
+  // a button earns the reputation of "not working".
+  const DICTATE_NOTES = {
+    'not-allowed': 'The microphone is blocked — allow mic access for this site, then try again 🎙️',
+    'service-not-allowed': 'The microphone is blocked — allow mic access for this site, then try again 🎙️',
+    'audio-capture': 'No microphone found — typing works just as well 🌿',
+    'no-speech': 'Didn’t catch anything — try again, a little closer 🌱',
+    'network': 'The speech service couldn’t be reached — typing works too 🌿',
+    'no-response': 'Voice input isn’t responding in this browser — typing works too 🌿',
+    'aborted': null, // she stopped it herself — stay quiet
+  };
+  const DICTATE_FALLBACK_NOTE = 'Voice input hiccuped — typing works too 🌿';
+
   function handleDictate(targetId, btn) {
     const el = document.getElementById(targetId);
     if (!el) return;
     if (dictation) {
-      dictation.stop();
-      dictation = null;
-      btn.classList.remove('listening');
+      dictation.stop(); // onEnd resets the button and clears the session
       return;
     }
-    dictation = Whisper().makeDictation((text) => {
-      el.value = (el.value ? el.value + ' ' : '') + text;
-      dictation = null;
-      btn.classList.remove('listening');
-      el.focus();
+    const session = Whisper().makeDictation({
+      onStart() { btn.classList.add('listening'); },
+      onText(text) {
+        el.value = (el.value ? el.value + ' ' : '') + text;
+        el.focus();
+      },
+      onError(kind) {
+        const note = (kind in DICTATE_NOTES) ? DICTATE_NOTES[kind] : DICTATE_FALLBACK_NOTE;
+        if (note) toast(note);
+      },
+      onEnd() {
+        dictation = null;
+        btn.classList.remove('listening');
+      },
     });
-    if (dictation) {
-      btn.classList.add('listening');
-      dictation.start();
+    if (!session) {
+      toast('Voice input isn’t available in this browser — typing works great too 🌿');
+      return;
     }
+    dictation = session;
+    btn.classList.add('listening'); // immediate feedback; onStart confirms it
+    session.start();
   }
 
   function handleBuy(itemId) {
@@ -1150,7 +1182,8 @@ const GroveUI = {};
     else if (a === 'whisper-reply-send') sendCheerWithText(btn.dataset.member, btn.dataset.event, btn.dataset.text);
     else if (a === 'whisper-personal') handleWhisperPersonal(btn.dataset.member, btn.dataset.event, btn.dataset.name);
     else if (a === 'whisper-insights') handleWhisperInsights();
-    else if (a === 'voice-speak') Whisper().speak(affirmationOfTheDay());
+    else if (a === 'voice-speak') Whisper().speak(affirmationOfTheDay(), (ctx.state.voice || {}).name);
+    else if (a === 'voice-try') Whisper().speak('Hello! Your garden is glad you are here.', (ctx.state.voice || {}).name);
     else if (a === 'voice-dictate') handleDictate(btn.dataset.target, btn);
     else if (a === 'close-modal') { ob = null; closeModal(); }
     else if (a === 'export') handleExport();
@@ -1168,6 +1201,12 @@ const GroveUI = {};
       handleImportFile(ev.target.files[0]);
       ev.target.value = '';
     }
+    if (ev.target.id === 'voice-select') {
+      if (!ctx.state.voice) ctx.state.voice = { name: null };
+      ctx.state.voice.name = ev.target.value || null;
+      ctx.save();
+      Whisper().speak('Like this.', ctx.state.voice.name);
+    }
   }
 
   // ---------- public API ----------
@@ -1175,6 +1214,7 @@ const GroveUI = {};
     ctx = context;
     document.addEventListener('click', onClick);
     document.addEventListener('change', onChange);
+    Whisper().warmVoices(); // Chrome loads voices async — poke early
     applyAccent();
   };
   GroveUI.renderAll = renderAll;

@@ -274,7 +274,7 @@ function fakeStorage() {
 
 test('defaultState has the full schema', () => {
   const st = S.defaultState(T('2026-07-02'));
-  assertEq(st.version, 3);
+  assertEq(st.version, 4);
   for (const key of ['player', 'xp', 'petals', 'streak', 'goals', 'journal', 'badges',
     'decor', 'shopOwned', 'sunshineSent', 'challengesWon', 'circle', 'lastVisit', 'onboarded', 'net']) {
     assert(key in st, `missing key ${key}`);
@@ -330,7 +330,7 @@ test('a v1 save loads and migrates to v2', () => {
     createdAt: 0, bloomedAt: null, reflection: null });
   storage.setItem('grove-save-v1', JSON.stringify(v1));
   const back = S.load();
-  assertEq(back.version, 3);
+  assertEq(back.version, 4);
   assertEq(back.net.outbox, [], 'net block added');
   assertEq(back.net.cursor, 0);
   assertEq(back.goals[0].private, false, 'goals gain the private flag');
@@ -349,7 +349,7 @@ test('importJson migrates v1 exports and still rejects garbage', () => {
   v1.version = 1;
   delete v1.net;
   const back = S.importJson(JSON.stringify(v1));
-  assertEq(back.version, 3);
+  assertEq(back.version, 4);
   assert('net' in back, 'net added');
   assertEq(back.net.session, null);
   assertThrows(() => S.importJson('{}'), 'empty object rejected');
@@ -377,7 +377,7 @@ test('a v2 save migrates to v3 preserving phase-2 data', () => {
   v2.net.circle = { id: 'c1', name: 'Us', inviteCode: 'ABC234', memberId: 'me' };
   storage.setItem('grove-save-v1', JSON.stringify(v2));
   const back = S.load();
-  assertEq(back.version, 3);
+  assertEq(back.version, 4);
   assertEq(back.aiConsent, { enabled: false, notedAt: null });
   assertEq(back.dailyWhisper, { day: null, text: null });
   assertEq(back.net.platform, null);
@@ -1234,6 +1234,136 @@ test('supporting a struggling member sparks a recovery crediting the player', ()
   assert(recovery.text.includes('Ana'), 'player named in recovery');
   const struggle = st.circle.feed.find(e => e.type === 'struggle');
   assertEq(struggle.cheered, true, 'struggle event marked cheered');
+});
+
+// ---------- voice: picking a warm female voice ----------
+const V = (name, lang) => ({ name, lang });
+
+test('pickVoice prefers a female Indian-English voice above all', () => {
+  const v = Whisper.pickVoice([
+    V('Microsoft Ravi - English (India)', 'en-IN'),
+    V('Microsoft David - English (United States)', 'en-US'),
+    V('Microsoft Heera - English (India)', 'en-IN'),
+  ]);
+  assertEq(v.name, 'Microsoft Heera - English (India)');
+});
+test('pickVoice knows Veena and Neerja are female Indian-English voices', () => {
+  assertEq(Whisper.pickVoice([V('Veena', 'en-IN'), V('Google US English', 'en-US')]).name, 'Veena');
+  assertEq(Whisper.pickVoice([
+    V('Microsoft Neerja Online (Natural) - English (India)', 'en-IN'),
+    V('Microsoft Aria Online (Natural) - English (United States)', 'en-US'),
+  ]).name, 'Microsoft Neerja Online (Natural) - English (India)');
+});
+test('pickVoice falls back to any female English voice before a male Indian one', () => {
+  const v = Whisper.pickVoice([
+    V('Google UK English Female', 'en-GB'),
+    V('Microsoft Ravi - English (India)', 'en-IN'),
+  ]);
+  assertEq(v.name, 'Google UK English Female');
+});
+test('pickVoice takes Indian-English over an unknown-gender default', () => {
+  const v = Whisper.pickVoice([
+    V('Microsoft David - English (United States)', 'en-US'),
+    V('Microsoft Ravi - English (India)', 'en-IN'),
+  ]);
+  assertEq(v.name, 'Microsoft Ravi - English (India)');
+});
+test('pickVoice returns null when nothing matches', () => {
+  assertEq(Whisper.pickVoice([]), null);
+  assertEq(Whisper.pickVoice([V('Microsoft David - English (United States)', 'en-US')]), null);
+});
+test('pickVoice honors an explicit preferred voice name first', () => {
+  const v = Whisper.pickVoice([
+    V('Google UK English Female', 'en-GB'),
+    V('Microsoft Heera - English (India)', 'en-IN'),
+  ], 'Google UK English Female');
+  assertEq(v.name, 'Google UK English Female');
+});
+
+// ---------- voice: dictation error handling ----------
+function FakeRec() {
+  FakeRec.last = this;
+  this.started = 0; this.stopped = 0;
+  this.start = () => { this.started += 1; if (this.onstart) this.onstart(); };
+  this.stop = () => { this.stopped += 1; };
+}
+
+test('dictation reports errors and always ends', () => {
+  Whisper._setRecognitionCtor(FakeRec);
+  const got = { errors: [], ends: 0, texts: [] };
+  const s = Whisper.makeDictation({
+    onText: (t) => got.texts.push(t),
+    onError: (e) => got.errors.push(e),
+    onEnd: () => got.ends += 1,
+  });
+  s.start();
+  FakeRec.last.onerror({ error: 'not-allowed' });
+  FakeRec.last.onend();
+  Whisper._setRecognitionCtor(null);
+  assertEq(got.errors, ['not-allowed']);
+  assertEq(got.ends, 1, 'onEnd exactly once');
+  assertEq(got.texts, []);
+});
+test('dictation delivers transcribed text then ends cleanly', () => {
+  Whisper._setRecognitionCtor(FakeRec);
+  const got = { errors: [], ends: 0, texts: [] };
+  const s = Whisper.makeDictation({
+    onText: (t) => got.texts.push(t),
+    onError: (e) => got.errors.push(e),
+    onEnd: () => got.ends += 1,
+  });
+  s.start();
+  FakeRec.last.onresult({ results: [[{ transcript: 'hello grove' }]] });
+  FakeRec.last.onend();
+  Whisper._setRecognitionCtor(null);
+  assertEq(got.texts, ['hello grove']);
+  assertEq(got.errors, []);
+  assertEq(got.ends, 1);
+});
+test('a dead recognition session trips the watchdog', async () => {
+  Whisper._setRecognitionCtor(FakeRec);
+  const got = { errors: [], ends: 0 };
+  const s = Whisper.makeDictation({
+    onError: (e) => got.errors.push(e),
+    onEnd: () => got.ends += 1,
+  }, { watchdogMs: 25 });
+  s.start();
+  await new Promise(r => setTimeout(r, 70));
+  Whisper._setRecognitionCtor(null);
+  assertEq(got.errors, ['no-response'], 'watchdog error reported');
+  assertEq(got.ends, 1, 'session ended exactly once');
+  assert(FakeRec.last.stopped >= 1, 'recognition stop attempted');
+});
+test('the watchdog stays quiet when a result arrives in time', async () => {
+  Whisper._setRecognitionCtor(FakeRec);
+  const got = { errors: [], ends: 0, texts: [] };
+  const s = Whisper.makeDictation({
+    onText: (t) => got.texts.push(t),
+    onError: (e) => got.errors.push(e),
+    onEnd: () => got.ends += 1,
+  }, { watchdogMs: 25 });
+  s.start();
+  FakeRec.last.onresult({ results: [[{ transcript: 'quick' }]] });
+  FakeRec.last.onend();
+  await new Promise(r => setTimeout(r, 70));
+  Whisper._setRecognitionCtor(null);
+  assertEq(got.texts, ['quick']);
+  assertEq(got.errors, [], 'no watchdog false alarm');
+  assertEq(got.ends, 1);
+});
+
+// ---------- state v4: voice preference ----------
+test('state v4 carries a voice preference and migrates older saves', () => {
+  const st = S.defaultState(T('2026-07-04'));
+  assertEq(st.version, 4);
+  assert(st.voice && 'name' in st.voice, 'voice pref present');
+  assertEq(st.voice.name, null);
+  const old = S.defaultState(T('2026-07-04'));
+  old.version = 3;
+  delete old.voice;
+  const m = S.migrate(old);
+  assertEq(m.version, 4);
+  assertEq(m.voice.name, null);
 });
 
 // ---------- summary ----------

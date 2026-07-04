@@ -1,0 +1,2 @@
+[    2234ms] [LOG] [AppDeploy] Error tracking enabled @ https://v2.appdeploy.ai/shared/js/overlay.js:6
+[    6629ms] [WARNING] The resource https://api-v2.appdeploy.ai/app/grove-hpbc3e/_warmup was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally. @ https://grove-hpbc3e.v2.appdeploy.ai/:0
