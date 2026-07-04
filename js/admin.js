@@ -1,18 +1,23 @@
 'use strict';
-// GroveAdmin — the Grove Keeper's dashboard, served at #admin on platform
-// hosts. Shows aggregates and pseudonyms only (first name + flower); no goal
-// text, no boost text, no emails ever reach this page.
+// GroveAdmin — the Grove Keeper's dashboard (#admin) on platform hosts.
+// Four rooms: Overview (aggregates), Studio (campaign workflows), Ops
+// (browse/moderate/intervene), Audit (every admin action, forever visible).
+// Aggregates and pseudonyms only — no goal text, no boost text, no emails.
 const GroveAdmin = {};
 
 (function () {
   let client = null;
-  let lastInterventions = null;
+  let tab = 'overview';
+  let campaigns = [];
+  let channels = null;
+  let editing = null;   // campaign being edited (null = closed, {} = new)
 
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const toast = (msg) => window.GroveUI && window.GroveUI.toast(msg);
+  const when = (ts) => ts ? new Date(ts).toLocaleString() : '—';
 
   function shell(inner) {
     const tabs = document.querySelector('.tabs');
@@ -20,6 +25,13 @@ const GroveAdmin = {};
     const hud = $('#hud');
     if (hud) hud.innerHTML = '<span class="chip">🗝️ <strong>Grove Keeper</strong></span>';
     $('#app').innerHTML = `<section class="view">${inner}</section>`;
+  }
+
+  function nav() {
+    const T = [['overview', 'Overview'], ['studio', 'Studio'], ['ops', 'Ops'], ['audit', 'Audit']];
+    return `<div class="domain-tabs" style="margin-bottom:4px">${T.map(([id, label]) =>
+      `<button class="domain-tab ${tab === id ? 'active' : ''}" data-action="admin-tab" data-tab="${id}">${label}</button>`
+    ).join('')}</div>`;
   }
 
   function gate() {
@@ -44,7 +56,15 @@ const GroveAdmin = {};
       </div>`);
   }
 
-  // ---------- charts (inline SVG, garden palette) ----------
+  function guard(r) {
+    if (r.ok) return false;
+    const err = String(r.error || '');
+    if (err.indexOf('403') !== -1 || err === 'unauthorized') locked();
+    else shell(nav() + '<div class="empty-note">Could not reach the grove — try again.</div>');
+    return true;
+  }
+
+  // ---------- overview (unchanged panels) ----------
   function eventsChart(days) {
     const W = 560, H = 110, bw = Math.floor(W / days.length) - 6;
     const totals = days.map(d => d.step + d.bloom + d.cheer + d.struggle + d.recover);
@@ -96,70 +116,256 @@ const GroveAdmin = {};
       </div>`;
   }
 
-  function render(ov, iv) {
-    lastInterventions = iv;
-    const domains = Object.keys(ov.goals.domains).map(d => {
-      const v = ov.goals.domains[d];
+  async function renderOverview() {
+    shell(nav() + '<div class="empty-note">Reading the rings… 🌳</div>');
+    const [ov, iv] = await Promise.all([client.admin.overview(), client.admin.interventions()]);
+    if (guard(ov) || guard(iv)) return;
+    const o = ov.data, i = iv.data;
+    const domains = Object.keys(o.goals.domains).map(d => {
+      const v = o.goals.domains[d];
       return `<div class="stat-block"><b>${v.steps}</b><span>${esc(d)} steps · ${v.blooms} bloom${v.blooms === 1 ? '' : 's'}</span></div>`;
     }).join('') || '<div class="empty-note">No goal activity yet.</div>';
-
-    shell(`
-      <div class="section-title"><h2>The Grove Keeper’s Dashboard 🗝️</h2>
-        <button class="btn small secondary" data-action="admin-refresh">↻ refresh</button></div>
-
+    shell(`${nav()}
       <div class="card">
         <div class="section-title"><h2 style="font-size:1.05rem">Health</h2>
-          <span class="sub">aggregates only — no personal content</span></div>
+          <button class="btn small secondary" data-action="admin-refresh">↻</button></div>
         <div class="challenge-stats">
-          <div class="stat-block"><b>${ov.health.circles}</b><span>circles</span></div>
-          <div class="stat-block"><b>${ov.health.members}</b><span>members</span></div>
-          <div class="stat-block"><b>${ov.health.activeMembers7d}</b><span>active · 7d</span></div>
-          <div class="stat-block"><b>${ov.health.newMembers7d}</b><span>new · 7d</span></div>
-          <div class="stat-block"><b>${ov.whisperer.callsToday}</b><span>AI calls today</span></div>
-          <div class="stat-block"><b>${ov.nudges7d.manual + ov.nudges7d.workflow}</b><span>notes sent · 7d</span></div>
+          <div class="stat-block"><b>${o.health.circles}</b><span>circles</span></div>
+          <div class="stat-block"><b>${o.health.members}</b><span>members</span></div>
+          <div class="stat-block"><b>${o.health.activeMembers7d}</b><span>active · 7d</span></div>
+          <div class="stat-block"><b>${o.health.newMembers7d}</b><span>new · 7d</span></div>
+          <div class="stat-block"><b>${o.whisperer.callsToday}</b><span>AI calls today</span></div>
+          <div class="stat-block"><b>${o.nudges7d.manual + o.nudges7d.workflow}</b><span>notes sent · 7d</span></div>
         </div>
-        <div style="margin-top:14px">${eventsChart(ov.health.eventsByDay)}</div>
-        <div class="sub" style="font-size:0.75rem">🟩 steps · ⬜ other circle activity, last 14 days</div>
+        <div style="margin-top:14px">${eventsChart(o.health.eventsByDay)}</div>
+        <div class="sub" style="font-size:0.75rem">🟩 steps · ⬜ other activity, last 14 days</div>
       </div>
-
       <div class="card">
         <h2 style="font-size:1.05rem">Goals by life area</h2>
         <div class="challenge-stats" style="margin-top:8px">${domains}</div>
         <p class="sub" style="margin-top:8px">Median time from a struggle to first support:
-          <b>${ov.community.medianSupportHours == null ? '—' : ov.community.medianSupportHours + 'h'}</b></p>
+          <b>${o.community.medianSupportHours == null ? '—' : o.community.medianSupportHours + 'h'}</b></p>
       </div>
-
       <div class="card">
         <h2 style="font-size:1.05rem">Sentiment (nightly, labels only)</h2>
-        <div style="margin-top:10px">${sentimentChart(ov.sentiment)}</div>
+        <div style="margin-top:10px">${sentimentChart(o.sentiment)}</div>
       </div>
-
       <div class="card">
         <div class="section-title"><h2 style="font-size:1.05rem">Where to step in</h2>
-          <span class="sub">${iv.stalled.length + iv.struggles.length} to look at</span></div>
-        ${iv.struggles.length ? `<h3 class="admin-h3">🌧️ Unsupported struggles (48h+)</h3>`
-          + iv.struggles.map(x => interventionRow('struggle', x)).join('') : ''}
-        ${iv.stalled.length ? `<h3 class="admin-h3">🍂 Quiet gardens (7d+)</h3>`
-          + iv.stalled.map(x => interventionRow('stalled', x)).join('') : ''}
-        ${!iv.stalled.length && !iv.struggles.length
+          <span class="sub">${i.stalled.length + i.struggles.length} to look at</span></div>
+        ${i.struggles.length ? `<h3 class="admin-h3">🌧️ Unsupported struggles (48h+)</h3>`
+          + i.struggles.map(x => interventionRow('struggle', x)).join('') : ''}
+        ${i.stalled.length ? `<h3 class="admin-h3">🍂 Quiet gardens (7d+)</h3>`
+          + i.stalled.map(x => interventionRow('stalled', x)).join('') : ''}
+        ${!i.stalled.length && !i.struggles.length
           ? '<div class="empty-note">Every garden is humming. Nothing needs you today 🌤️</div>' : ''}
-        ${iv.aiCapped.length ? `<h3 class="admin-h3">✨ Whisperer at capacity</h3>`
-          + iv.aiCapped.map(x => `<div class="admin-row"><span class="admin-who">${esc(x.circleName)} — ${x.count} calls today</span></div>`).join('') : ''}
+        ${i.aiCapped.length ? `<h3 class="admin-h3">✨ Whisperer at capacity</h3>`
+          + i.aiCapped.map(x => `<div class="admin-row"><span class="admin-who">${esc(x.circleName)} — ${x.count} calls today</span></div>`).join('') : ''}
       </div>`);
   }
 
-  async function load() {
-    shell('<div class="empty-note">Reading the rings… 🌳</div>');
-    const [ov, iv] = await Promise.all([client.admin.overview(), client.admin.interventions()]);
-    if (!ov.ok || !iv.ok) {
-      const err = (ov.ok ? iv : ov).error || '';
-      if (String(err).indexOf('403') !== -1 || err === 'unauthorized') locked();
-      else shell('<div class="empty-note">Could not reach the grove — try refresh.</div>');
-      return;
-    }
-    render(ov.data, iv.data);
+  // ---------- studio (campaign workflows) ----------
+  const TRIGGER_LABELS = {
+    'stalled': 'Quiet for N days', 'new-member': 'Joined in last N days',
+    'first-bloom': 'First bloom in last N days', 'struggle-unsupported': 'Struggle unsupported N days',
+    'everyone': 'Everyone (respects quiet mode)',
+  };
+
+  function campaignForm(c) {
+    const isNew = !c.id;
+    const triggers = Object.keys(TRIGGER_LABELS).map(t =>
+      `<option value="${t}" ${c.trigger === t ? 'selected' : ''}>${TRIGGER_LABELS[t]}</option>`).join('');
+    const ch = c.channels || ['note'];
+    const chBox = (id, label, ready) => `
+      <label class="privacy-row" ${ready ? '' : 'style="opacity:0.5"'}>
+        <input type="checkbox" class="camp-channel" value="${id}" ${ch.indexOf(id) !== -1 ? 'checked' : ''} ${ready ? '' : 'disabled'}>
+        ${label}</label>`;
+    return `
+      <div class="card" id="campaign-form">
+        <h2 style="font-size:1.05rem">${isNew ? 'New workflow' : 'Edit workflow'}</h2>
+        <label class="sub" style="font-weight:600">Name</label>
+        <input class="text-input" id="camp-name" maxlength="40" value="${esc(c.name || '')}" style="margin:4px 0 10px">
+        <label class="sub" style="font-weight:600">Who should get it (trigger)</label>
+        <select class="text-input" id="camp-trigger" style="margin:4px 0 10px">${triggers}</select>
+        <div class="settings-row">
+          <label class="sub">N days: <input class="text-input" id="camp-days" type="number" min="0" max="90"
+            value="${c.days != null ? c.days : 7}" style="width:80px;padding:6px 10px"></label>
+          <label class="sub">Cooldown days: <input class="text-input" id="camp-cooldown" type="number" min="1" max="90"
+            value="${c.cooldownDays != null ? c.cooldownDays : 7}" style="width:80px;padding:6px 10px"></label>
+        </div>
+        <label class="sub" style="font-weight:600">Message ({name} and {friend} fill in automatically)</label>
+        <textarea class="text-input" id="camp-template" rows="2" maxlength="240"
+          style="margin:4px 0 10px;resize:vertical">${esc(c.template || '')}</textarea>
+        <div class="sub" style="font-weight:600;margin-bottom:4px">Channels</div>
+        ${chBox('note', '🌿 In-app keeper note', true)}
+        ${chBox('push', `🔔 Push notification — ${esc((channels && channels.push) || 'claimed accounts')}`, true)}
+        ${chBox('email', `✉️ Email — ${esc((channels && channels.email) || 'needs provider key')}`, false)}
+        ${chBox('whatsapp', `💬 WhatsApp — ${esc((channels && channels.whatsapp) || 'needs provider key')}`, false)}
+        <label class="privacy-row"><input type="checkbox" id="camp-active" ${c.active !== false ? 'checked' : ''}> active</label>
+        <div class="modal-actions">
+          <button class="btn secondary" data-action="studio-cancel">Cancel</button>
+          <button class="btn accent" data-action="studio-save" ${c.id ? `data-id="${esc(c.id)}"` : ''}>Save workflow</button>
+        </div>
+      </div>`;
   }
 
+  async function renderStudio() {
+    shell(nav() + '<div class="empty-note">Opening the studio… 🌿</div>');
+    const [cr, chr] = await Promise.all([client.admin.campaigns(), client.admin.channels()]);
+    if (guard(cr)) return;
+    campaigns = cr.campaigns || [];
+    channels = chr.ok ? chr.channels : null;
+    const rows = campaigns.map(c => `
+      <div class="admin-row">
+        <span class="admin-who">${c.active ? '🟢' : '⏸️'} <b>${esc(c.name)}</b>
+          <span class="sub">${esc(TRIGGER_LABELS[c.trigger] || c.trigger)} · ${(c.channels || []).join(' + ')}
+          · sent ${c.sentCount || 0} · last run ${when(c.lastRunAt)}</span></span>
+        <span style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn small secondary" data-action="studio-run" data-id="${esc(c.id)}">▶ Run now</button>
+          <button class="btn small secondary" data-action="studio-edit" data-id="${esc(c.id)}">Edit</button>
+          <button class="btn small secondary" data-action="studio-toggle" data-id="${esc(c.id)}">${c.active ? 'Pause' : 'Activate'}</button>
+          <button class="btn small" style="background:var(--danger)" data-action="studio-delete" data-id="${esc(c.id)}">Delete</button>
+        </span>
+      </div>`).join('');
+    shell(`${nav()}
+      <div class="card">
+        <div class="section-title"><h2 style="font-size:1.05rem">Workflows</h2>
+          <button class="btn small accent" data-action="studio-new">+ New workflow</button></div>
+        ${rows || '<div class="empty-note">No workflows yet — the nightly round seeds two defaults.</div>'}
+      </div>
+      ${editing ? campaignForm(editing) : ''}
+      <div class="card">
+        <h2 style="font-size:1.05rem">Channel status</h2>
+        <p class="sub" style="margin-top:6px">
+          🌿 In-app note: <b>${esc((channels && channels.note) || 'ready')}</b><br>
+          🔔 Push: <b>${esc((channels && channels.push) || '—')}</b><br>
+          ✉️ Email: <b>${esc((channels && channels.email) || 'needs provider key')}</b><br>
+          💬 WhatsApp: <b>${esc((channels && channels.whatsapp) || 'needs provider key')}</b></p>
+        <p class="sub">Email and WhatsApp also need players to share contact details —
+          Grove keeps everyone anonymous by default, so those channels stay dormant
+          until both a provider key and an opt-in flow exist.</p>
+      </div>`);
+  }
+
+  function collectCampaign(id) {
+    const chs = [...document.querySelectorAll('.camp-channel:checked')].map(x => x.value);
+    return {
+      id: id || undefined,
+      name: $('#camp-name').value.trim(),
+      trigger: $('#camp-trigger').value,
+      days: Number($('#camp-days').value) || 0,
+      cooldownDays: Number($('#camp-cooldown').value) || 7,
+      template: $('#camp-template').value.trim(),
+      channels: chs.length ? chs : ['note'],
+      active: $('#camp-active').checked,
+    };
+  }
+
+  // ---------- ops ----------
+  async function renderOps(detailId) {
+    shell(nav() + '<div class="empty-note">Walking the rows… 🌿</div>');
+    if (detailId) return renderCircleDetail(detailId);
+    const [cr, fr] = await Promise.all([client.admin.circles(), client.admin.flags()]);
+    if (guard(cr)) return;
+    const flags = fr.ok ? fr.flags : { whisperer: true, newCircles: true, banner: '' };
+    const rows = (cr.circles || []).map(c => `
+      <div class="admin-row">
+        <span class="admin-who">💛 <b>${esc(c.name)}</b>
+          <span class="sub">${c.members} member${c.members === 1 ? '' : 's'}
+          ${c.mentor ? `· 🧭 ${esc(c.mentor)}` : ''} · AI today ${c.aiToday}${c.aiCapOverride ? `/${c.aiCapOverride}` : ''}
+          · last activity ${when(c.lastEventAt)}</span></span>
+        <button class="btn small secondary" data-action="ops-detail" data-id="${esc(c.id)}">Open</button>
+      </div>`).join('');
+    shell(`${nav()}
+      <div class="card">
+        <h2 style="font-size:1.05rem">Switches</h2>
+        <label class="privacy-row"><input type="checkbox" id="flag-whisperer" ${flags.whisperer ? 'checked' : ''}>
+          ✨ Whisperer (all AI features)</label>
+        <label class="privacy-row"><input type="checkbox" id="flag-circles" ${flags.newCircles ? 'checked' : ''}>
+          💛 New circles can be created</label>
+        <label class="sub" style="font-weight:600;display:block;margin-top:8px">Maintenance banner (empty = hidden)</label>
+        <input class="text-input" id="flag-banner" maxlength="160" value="${esc(flags.banner || '')}" style="margin:4px 0 10px">
+        <button class="btn small accent" data-action="ops-save-flags">Save switches</button>
+      </div>
+      <div class="card">
+        <div class="section-title"><h2 style="font-size:1.05rem">Circles</h2>
+          <button class="btn small secondary" data-action="admin-refresh">↻</button></div>
+        ${rows || '<div class="empty-note">No circles yet.</div>'}
+      </div>`);
+  }
+
+  async function renderCircleDetail(id) {
+    const r = await client.admin.circleDetail(id);
+    if (guard(r)) return;
+    const d = r.data;
+    const members = d.members.map(m => `
+      <div class="admin-row">
+        <span class="admin-who">🌸 <b>${esc(m.name)}</b>
+          <span class="sub">${m.claimed ? 'claimed ✨' : 'anonymous'}${m.quiet ? ' · 🤫 quiet' : ''}
+          · last seen ${when(m.lastSeen)}</span></span>
+        <span style="display:flex;gap:6px">
+          <button class="btn small secondary" data-action="admin-nudge" data-member="${esc(m.id)}" data-name="${esc(m.name)}">Send note 🌿</button>
+          <button class="btn small" style="background:var(--danger)" data-action="ops-remove-member" data-id="${esc(m.id)}" data-name="${esc(m.name)}">Remove</button>
+        </span>
+      </div>`).join('');
+    shell(`${nav()}
+      <div class="card">
+        <div class="section-title"><h2 style="font-size:1.05rem">💛 ${esc(d.circle.name)}</h2>
+          <button class="btn small secondary" data-action="admin-tabops">← All circles</button></div>
+        <p class="sub" style="margin-top:4px">created ${when(d.circle.createdAt)} ·
+          ${d.counts.events} events · ${d.counts.messages} chat messages
+          ${d.circle.mentor ? `· mentor 🧭 ${esc(d.circle.mentor.name)}` : ''}
+          ${d.circle.inviteCode ? `· invite <b>${esc(d.circle.inviteCode)}</b>` : ''}</p>
+        <div class="settings-row" style="margin-top:8px">
+          <button class="btn small secondary" data-action="ops-regen" data-id="${esc(id)}">♻ New invite code</button>
+          <button class="btn small secondary" data-action="ops-ai-reset" data-id="${esc(id)}">✨ Reset AI budget today</button>
+          <label class="sub">AI cap: <input class="text-input" id="ops-cap" type="number" min="0" max="500"
+            value="${d.circle.aiCapOverride || ''}" placeholder="40" style="width:80px;padding:6px 10px"></label>
+          <button class="btn small secondary" data-action="ops-ai-cap" data-id="${esc(id)}">Set cap</button>
+          <button class="btn small" style="background:var(--danger)" data-action="ops-purge" data-id="${esc(id)}" data-name="${esc(d.circle.name)}">Purge circle</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2 style="font-size:1.05rem">Members</h2>
+        ${members || '<div class="empty-note">Empty circle.</div>'}
+      </div>
+      <div class="card">
+        <h2 style="font-size:1.05rem">Moderation</h2>
+        <p class="sub" style="margin-top:4px">Remove a reported message or feed event by its id
+          (ids arrive with reports; content is never browsed here).</p>
+        <div class="settings-row">
+          <input class="text-input" id="mod-id" placeholder="message or event id" style="max-width:280px">
+          <button class="btn small secondary" data-action="ops-del-message">Delete message</button>
+          <button class="btn small secondary" data-action="ops-del-event">Delete event</button>
+        </div>
+      </div>`);
+  }
+
+  // ---------- audit ----------
+  async function renderAudit() {
+    shell(nav() + '<div class="empty-note">Reading the ledger… 📜</div>');
+    const r = await client.admin.auditLog();
+    if (guard(r)) return;
+    const rows = (r.audit || []).map(a => `
+      <div class="admin-row"><span class="admin-who">
+        <b>${esc(a.action)}</b> <span class="sub">${esc(a.target || '')}
+        ${a.detail ? '· ' + esc(a.detail) : ''} · ${esc(a.email)} · ${when(a.at)}</span></span></div>`).join('');
+    shell(`${nav()}
+      <div class="card">
+        <div class="section-title"><h2 style="font-size:1.05rem">Every keeper action 📜</h2>
+          <button class="btn small secondary" data-action="admin-refresh">↻</button></div>
+        ${rows || '<div class="empty-note">No admin actions recorded yet.</div>'}
+      </div>`);
+  }
+
+  function load() {
+    if (tab === 'overview') renderOverview();
+    else if (tab === 'studio') renderStudio();
+    else if (tab === 'ops') renderOps();
+    else renderAudit();
+  }
+
+  // ---------- note composer (shared) ----------
   function openComposer(memberId, name, kind) {
     const suggestion = kind === 'struggle'
       ? `Saw that things are heavy this week, ${name}. The grove is holding your place — one kind breath at a time. 🌿`
@@ -184,15 +390,7 @@ const GroveAdmin = {};
     root.innerHTML = '';
   }
 
-  async function sendNote(memberId) {
-    const text = ($('#admin-note') && $('#admin-note').value.trim()) || '';
-    if (!text) return;
-    const r = await client.admin.nudge(memberId, text);
-    closeComposer();
-    toast(r.ok ? 'Note tucked into her grove 🌿' : 'Could not send — try again.');
-  }
-
-  function onClick(ev) {
+  async function onClick(ev) {
     const btn = ev.target.closest('[data-action]');
     if (!btn) return;
     const a = btn.dataset.action;
@@ -202,10 +400,95 @@ const GroveAdmin = {};
           ? 'Your browser blocked the sign-in window — allow popups.'
           : 'Sign-in was cancelled.');
       });
-    } else if (a === 'admin-refresh') load();
+    } else if (a === 'admin-tab') { tab = btn.dataset.tab; editing = null; load(); }
+    else if (a === 'admin-tabops') { tab = 'ops'; load(); }
+    else if (a === 'admin-refresh') load();
     else if (a === 'admin-nudge') openComposer(btn.dataset.member, btn.dataset.name, btn.dataset.kind);
     else if (a === 'admin-composer-close') closeComposer();
-    else if (a === 'admin-send') sendNote(btn.dataset.member);
+    else if (a === 'admin-send') {
+      const text = ($('#admin-note') && $('#admin-note').value.trim()) || '';
+      if (!text) return;
+      const r = await client.admin.nudge(btn.dataset.member, text);
+      closeComposer();
+      toast(r.ok ? 'Note tucked into her grove 🌿' : 'Could not send — try again.');
+    }
+    else if (a === 'studio-new') { editing = { channels: ['note'], days: 7, cooldownDays: 7, active: true }; renderStudio(); }
+    else if (a === 'studio-edit') { editing = campaigns.find(c => c.id === btn.dataset.id) || null; renderStudio(); }
+    else if (a === 'studio-cancel') { editing = null; renderStudio(); }
+    else if (a === 'studio-save') {
+      const c = collectCampaign(btn.dataset.id);
+      if (!c.name || !c.template) { toast('Name and message are needed 🌿'); return; }
+      const r = await client.admin.saveCampaign(c);
+      if (r.ok) { editing = null; toast('Workflow saved 🌿'); renderStudio(); }
+      else toast('Could not save — check the fields.');
+    }
+    else if (a === 'studio-toggle') {
+      const c = campaigns.find(x => x.id === btn.dataset.id);
+      if (!c) return;
+      const r = await client.admin.saveCampaign({ ...c, active: !c.active });
+      toast(r.ok ? (c.active ? 'Paused ⏸️' : 'Activated 🟢') : 'Could not update.');
+      renderStudio();
+    }
+    else if (a === 'studio-delete') {
+      if (!window.confirm('Delete this workflow? Its send log stays in the ledger.')) return;
+      await client.admin.deleteCampaign(btn.dataset.id);
+      renderStudio();
+    }
+    else if (a === 'studio-run') {
+      toast('Running the workflow…');
+      const r = await client.admin.runCampaign(btn.dataset.id);
+      toast(r.ok ? `Matched ${r.data.matched}, sent ${r.data.sent}${r.data.pushSkipped ? `, ${r.data.pushSkipped} push skipped (no account)` : ''}` : 'Run failed.');
+      renderStudio();
+    }
+    else if (a === 'ops-detail') renderOps(btn.dataset.id);
+    else if (a === 'ops-save-flags') {
+      const r = await client.admin.saveFlags({
+        whisperer: $('#flag-whisperer').checked,
+        newCircles: $('#flag-circles').checked,
+        banner: $('#flag-banner').value.trim(),
+      });
+      toast(r.ok ? 'Switches saved 🌿' : 'Could not save switches.');
+    }
+    else if (a === 'ops-regen') {
+      const r = await client.admin.regenInvite(btn.dataset.id);
+      toast(r.ok ? `New invite: ${r.data.inviteCode}` : 'Could not regenerate.');
+      renderOps(btn.dataset.id);
+    }
+    else if (a === 'ops-ai-reset') {
+      await client.admin.circleAi(btn.dataset.id, { resetToday: true });
+      toast('AI budget reset for today ✨');
+      renderOps(btn.dataset.id);
+    }
+    else if (a === 'ops-ai-cap') {
+      const cap = Number(($('#ops-cap') && $('#ops-cap').value) || 0);
+      await client.admin.circleAi(btn.dataset.id, { capOverride: cap > 0 ? cap : null });
+      toast(cap > 0 ? `AI cap set to ${cap} ✨` : 'AI cap back to default ✨');
+      renderOps(btn.dataset.id);
+    }
+    else if (a === 'ops-remove-member') {
+      if (!window.confirm(`Remove ${btn.dataset.name} from this circle? Her local garden is untouched.`)) return;
+      await client.admin.removeMember(btn.dataset.id);
+      toast('Member removed.');
+      renderOps();
+    }
+    else if (a === 'ops-purge') {
+      if (!window.confirm(`Purge "${btn.dataset.name}" completely? Members, events, chat, and voice notes are deleted. This cannot be undone.`)) return;
+      await client.admin.purgeCircle(btn.dataset.id);
+      toast('Circle purged.');
+      renderOps();
+    }
+    else if (a === 'ops-del-message') {
+      const id = ($('#mod-id') && $('#mod-id').value.trim()) || '';
+      if (!id) return;
+      const r = await client.admin.deleteMessage(id);
+      toast(r.ok ? 'Message deleted.' : 'Not found.');
+    }
+    else if (a === 'ops-del-event') {
+      const id = ($('#mod-id') && $('#mod-id').value.trim()) || '';
+      if (!id) return;
+      const r = await client.admin.deleteEvent(id);
+      toast(r.ok ? 'Event deleted.' : 'Not found.');
+    }
   }
 
   GroveAdmin.boot = function (c) {
