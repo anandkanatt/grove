@@ -251,6 +251,22 @@ GroveNetAppDeploy.makeClient = function (cfg) {
         const r = await get('/api/admin/audit');
         return r.ok ? { ok: true, audit: r.data.audit } : r;
       },
+      evalCases: async () => {
+        const r = await get('/api/admin/evals/cases');
+        return r.ok ? { ok: true, cases: r.data.cases } : r;
+      },
+      runEvalCase: async (caseId) => {
+        const r = await post('/api/admin/evals/run-case', { caseId });
+        return r.ok ? { ok: true, result: r.data } : r;
+      },
+      saveEvalRun: async (cases) => {
+        const r = await post('/api/admin/evals/save', { cases });
+        return r.ok ? { ok: true, run: r.data.run } : r;
+      },
+      evalRuns: async () => {
+        const r = await get('/api/admin/evals/runs');
+        return r.ok ? { ok: true, runs: r.data.runs, latest: r.data.latest } : r;
+      },
     },
 
     // ---------- phase 4: accounts & keeper notes ----------

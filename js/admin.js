@@ -28,7 +28,7 @@ const GroveAdmin = {};
   }
 
   function nav() {
-    const T = [['overview', 'Overview'], ['studio', 'Studio'], ['ops', 'Ops'], ['audit', 'Audit']];
+    const T = [['overview', 'Overview'], ['studio', 'Studio'], ['ops', 'Ops'], ['evals', 'Evals'], ['audit', 'Audit']];
     return `<div class="domain-tabs" style="margin-bottom:4px">${T.map(([id, label]) =>
       `<button class="domain-tab ${tab === id ? 'active' : ''}" data-action="admin-tab" data-tab="${id}">${label}</button>`
     ).join('')}</div>`;
@@ -341,6 +341,98 @@ const GroveAdmin = {};
       </div>`);
   }
 
+  // ---------- model evals ----------
+  let evalRunning = false;
+
+  function runsChart(runs) {
+    if (!runs.length) return '';
+    const W = 560, H = 70, bw = Math.floor(W / Math.max(runs.length, 8)) - 6;
+    const ordered = runs.slice().reverse();
+    let bars = '';
+    ordered.forEach((r, i) => {
+      const rate = r.summary && r.summary.total ? r.summary.passed / r.summary.total : 0;
+      const x = i * (bw + 6) + 3;
+      const h = Math.max(3, Math.round(rate * (H - 22)));
+      bars += `
+        <rect x="${x}" y="${H - 14 - h}" width="${bw}" height="${h}" rx="3"
+          fill="${rate >= 0.9 ? '#7ba05b' : rate >= 0.7 ? '#d9a441' : '#c66b8e'}"/>
+        <text x="${x + bw / 2}" y="${H - 2}" text-anchor="middle" font-size="8" fill="#7d8a78">${Math.round(rate * 100)}%</text>`;
+    });
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${bars}</svg>`;
+  }
+
+  function evalCaseRow(c) {
+    const judge = c.judge || {};
+    const badge = c.pass ? '🟢' : '🔴';
+    return `
+      <div class="admin-row" style="align-items:flex-start">
+        <span class="admin-who">${badge} <b>${esc(c.id)}</b>
+          <span class="sub">warmth ${judge.warmth ?? '—'}/5 · concrete ${judge.concreteness ?? '—'}/5
+          · ${judge.safe ? 'safe' : '⚠ safety'}${judge.reason ? ' · ' + esc(judge.reason) : ''}
+          ${(c.notes || []).length ? '<br>checks: ' + esc((c.notes || []).join('; ')) : ''}
+          ${!c.pass && c.output ? `<br><span style="font-family:var(--font-mono, monospace);font-size:0.72rem">${esc(String(c.output).slice(0, 260))}</span>` : ''}</span></span>
+      </div>`;
+  }
+
+  async function renderEvals() {
+    shell(nav() + '<div class="empty-note">Fetching the report card… 🧪</div>');
+    const r = await client.admin.evalRuns();
+    if (guard(r)) return;
+    const latest = r.latest;
+    const features = latest && latest.summary ? latest.summary.features : {};
+    const featBlocks = Object.keys(features).map(f => {
+      const v = features[f];
+      return `<div class="stat-block"><b>${v.passed}/${v.total}</b>
+        <span>${esc(f)} · warmth ${v.warmth} · concrete ${v.concreteness}</span></div>`;
+    }).join('');
+    shell(`${nav()}
+      <div class="card">
+        <div class="section-title"><h2 style="font-size:1.05rem">Whisperer report card 🧪</h2>
+          <button class="btn small accent" data-action="evals-run" ${evalRunning ? 'disabled' : ''}>
+            ${evalRunning ? 'Running…' : '▶ Run the suite'}</button></div>
+        <p class="sub" style="margin-top:4px">10 synthetic cases across steps, ideas, mentor, cheer, and
+          assess — shape checks plus a judge scoring warmth, concreteness, and safety.
+          About 20 AI calls per run. Real member content is never sampled.</p>
+        <div id="eval-progress"></div>
+        ${r.runs && r.runs.length ? `<div style="margin-top:10px">${runsChart(r.runs)}</div>
+          <div class="sub" style="font-size:0.75rem">pass rate per run, oldest → newest</div>` : ''}
+      </div>
+      ${latest ? `
+      <div class="card">
+        <div class="section-title"><h2 style="font-size:1.05rem">Latest run</h2>
+          <span class="sub">${when(latest.at)} · ${latest.summary.passed}/${latest.summary.total} passed</span></div>
+        <div class="challenge-stats" style="margin-top:8px">${featBlocks}</div>
+        <h3 class="admin-h3">Cases</h3>
+        ${(latest.cases || []).map(evalCaseRow).join('')}
+      </div>` : '<div class="card"><div class="empty-note">No runs yet — press ▶ to grade the whisperer.</div></div>'}`);
+  }
+
+  async function runEvalSuite() {
+    if (evalRunning) return;
+    evalRunning = true;
+    const cr = await client.admin.evalCases();
+    if (guard(cr)) { evalRunning = false; return; }
+    const cases = cr.cases || [];
+    const results = [];
+    for (let i = 0; i < cases.length; i++) {
+      const prog = $('#eval-progress');
+      if (prog) prog.innerHTML = `<div class="progress-track" style="margin-top:10px">
+        <i style="width:${Math.round((i / cases.length) * 100)}%"></i></div>
+        <div class="sub" style="margin-top:4px">grading ${esc(cases[i].id)} (${i + 1}/${cases.length})…</div>`;
+      const rr = await client.admin.runEvalCase(cases[i].id);
+      if (rr.ok) results.push(rr.result);
+      else results.push({ id: cases[i].id, feature: cases[i].feature, pass: false,
+        prog: { pass: false, notes: ['route error: ' + rr.error] },
+        judge: { warmth: 0, concreteness: 0, safe: false, reason: 'route error' } });
+    }
+    const saved = await client.admin.saveEvalRun(results);
+    evalRunning = false;
+    toast(saved.ok
+      ? `Report card saved — ${saved.run.summary.passed}/${saved.run.summary.total} passed 🧪`
+      : 'Could not save the run.');
+    renderEvals();
+  }
+
   // ---------- audit ----------
   async function renderAudit() {
     shell(nav() + '<div class="empty-note">Reading the ledger… 📜</div>');
@@ -362,6 +454,7 @@ const GroveAdmin = {};
     if (tab === 'overview') renderOverview();
     else if (tab === 'studio') renderStudio();
     else if (tab === 'ops') renderOps();
+    else if (tab === 'evals') renderEvals();
     else renderAudit();
   }
 
@@ -440,6 +533,7 @@ const GroveAdmin = {};
       toast(r.ok ? `Matched ${r.data.matched}, sent ${r.data.sent}${r.data.pushSkipped ? `, ${r.data.pushSkipped} push skipped (no account)` : ''}` : 'Run failed.');
       renderStudio();
     }
+    else if (a === 'evals-run') runEvalSuite();
     else if (a === 'ops-detail') renderOps(btn.dataset.id);
     else if (a === 'ops-save-flags') {
       const r = await client.admin.saveFlags({

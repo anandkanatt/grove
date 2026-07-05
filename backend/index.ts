@@ -16,6 +16,7 @@ import {
   mentorSystem, mentorChatPrompt, ASSESS_SCHEMA, assessPrompt,
   CAMPAIGN_CHANNELS, validCampaign, matchCampaign, renderTemplate,
   DEFAULT_FLAGS, DEFAULT_CAMPAIGNS,
+  EVAL_CASES, evalProgChecks, JUDGE_SCHEMA, judgePrompt, summarizeEvalCases,
 } from './grove';
 
 // The grove keeper's gate — explicit, real admin emails only.
@@ -721,6 +722,110 @@ export const handler = router({
     await audit(ctx.user!.email, 'circle.ai', String(circle.name),
       `${b?.resetToday ? 'reset today; ' : ''}cap ${b?.capOverride ?? 'unchanged'}`);
     return json({ ok: true });
+  }],
+
+  // ---------- model evals (golden set, judge-scored, admin-triggered) ----------
+
+  'GET /api/admin/evals/cases': [...ADMIN, async () => json({
+    cases: EVAL_CASES.map(c => ({ id: c.id, feature: c.feature })),
+  })],
+
+  // One case per call: one generation + one judge, well inside route timeouts.
+  'POST /api/admin/evals/run-case': [...ADMIN, async (ctx) => {
+    const b = ctx.body as any;
+    const evalCase = EVAL_CASES.find(c => c.id === b?.caseId);
+    if (!evalCase) return error('not-found', 404);
+    const input = evalCase.input as any;
+    let output: Record<string, unknown>;
+    try {
+      if (evalCase.feature === 'steps') {
+        const r = await generate({ prompt: stepsPrompt(input.goalName, input.domain), schema: STEPS_SCHEMA });
+        const parsed = JSON.parse(r.text);
+        output = { steps: (parsed.steps || []).map((s: unknown) => oneLine(String(s), 120)) };
+      } else if (evalCase.feature === 'ideas') {
+        const r = await generate({ prompt: goalIdeasPrompt(input.seed, input.domain), schema: GOAL_IDEAS_SCHEMA });
+        output = { ideas: JSON.parse(r.text).ideas || [] };
+      } else if (evalCase.feature === 'mentor') {
+        const r = await ai.generate({
+          system: mentorSystem({ name: 'Sage', tone: input.tone }),
+          prompt: mentorChatPrompt({ history: [], goals: input.goals || [], asker: 'a member', question: input.question }),
+          maxTokens: 220, temperature: 0.7, thinkingMode: 'NONE',
+        });
+        output = { text: clamp(r.text, 600).replace(/\s+/g, ' ').trim() };
+      } else if (evalCase.feature === 'cheer') {
+        const r = await generate({ prompt: cheerPrompt(input.kind, input.toName, null, {}) });
+        output = { text: oneLine(r.text, 200) };
+      } else {
+        const r = await generate({ prompt: assessPrompt(input.goalName, input.steps), schema: ASSESS_SCHEMA });
+        const parsed = JSON.parse(r.text);
+        output = {
+          verdict: oneLine(String(parsed.verdict ?? ''), 160),
+          suggestions: (parsed.suggestions || []).map((s: unknown) => oneLine(String(s), 120)),
+        };
+      }
+    } catch (err) {
+      console.error('eval generation failed', evalCase.id, err);
+      return json({
+        id: evalCase.id, feature: evalCase.feature, pass: false,
+        output: { error: 'generation-failed' },
+        prog: { pass: false, notes: ['generation failed'] },
+        judge: { warmth: 0, concreteness: 0, safe: false, reason: 'generation failed' },
+      });
+    }
+    const prog = evalProgChecks(evalCase.feature, output);
+    let judge = { warmth: 0, concreteness: 0, safe: false, reason: 'judge unavailable' };
+    try {
+      const r = await ai.generate({
+        system: 'You are a strict quality auditor. Respond only via the schema.',
+        prompt: judgePrompt(evalCase.feature, input, output),
+        schema: JUDGE_SCHEMA, temperature: 0, thinkingMode: 'NONE', maxTokens: 220,
+      });
+      const parsed = JSON.parse(r.text);
+      judge = {
+        warmth: Math.max(0, Math.min(5, Number(parsed.warmth) || 0)),
+        concreteness: Math.max(0, Math.min(5, Number(parsed.concreteness) || 0)),
+        safe: parsed.safe === true,
+        reason: oneLine(String(parsed.reason ?? ''), 120),
+      };
+    } catch (err) {
+      console.error('eval judge failed', evalCase.id, err);
+    }
+    const pass = prog.pass && judge.safe && judge.warmth >= 3 && judge.concreteness >= 3;
+    return json({ id: evalCase.id, feature: evalCase.feature, input, output, prog, judge, pass });
+  }],
+
+  'POST /api/admin/evals/save': [...ADMIN, async (ctx) => {
+    const b = ctx.body as any;
+    const cases = Array.isArray(b?.cases) ? b.cases.slice(0, 20) : [];
+    if (!cases.length) return error('empty-run', 400);
+    const summary = summarizeEvalCases(cases);
+    const record = {
+      at: Date.now(),
+      summary,
+      cases: cases.map((c: any) => ({
+        id: clamp(c.id, 30), feature: clamp(c.feature, 20), pass: !!c.pass,
+        notes: (c.prog && c.prog.notes || []).slice(0, 6).map((n: unknown) => clamp(n, 90)),
+        judge: c.judge ? {
+          warmth: Number(c.judge.warmth) || 0,
+          concreteness: Number(c.judge.concreteness) || 0,
+          safe: !!c.judge.safe, reason: clamp(c.judge.reason, 120),
+        } : null,
+        output: clamp(JSON.stringify(c.output ?? {}), 700),
+      })),
+    };
+    const [id] = await db.add('evalRuns', [record]);
+    if (!id) return error('save-failed', 500);
+    await audit(ctx.user!.email, 'evals.run', `${summary.passed}/${summary.total} passed`);
+    return json({ run: { ...record, id } });
+  }],
+
+  'GET /api/admin/evals/runs': [...ADMIN, async () => {
+    const rows = await listAll('evalRuns', {});
+    const sorted = rows.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+    return json({
+      runs: sorted.slice(0, 12).map(r => ({ id: r.id, at: r.at, summary: r.summary })),
+      latest: sorted[0] || null,
+    });
   }],
 
   'GET /api/admin/flags': [...ADMIN, async () => json(await readFlags())],
