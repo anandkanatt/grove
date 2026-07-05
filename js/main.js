@@ -166,6 +166,7 @@
     async backupPush(blob) { return client ? client.backupPush(blob) : { ok: false, error: 'offline' }; },
     async backupPull() { return client ? client.backupPull() : { ok: false, error: 'offline' }; },
     async setQuiet(q) { return client ? client.setQuiet(q) : { ok: false, error: 'offline' }; },
+    async setReminder(utcHour) { return client ? client.setReminder(utcHour) : { ok: false, error: 'offline' }; },
     async pullNudges() { return client ? client.pullNudges() : { ok: true, notes: [] }; },
     async pullMessages(cid, since) { return client ? client.pullMessages(cid, since) : { ok: false, error: 'offline' }; },
     async sendMessage(cid, mid, p) { return client ? client.sendMessage(cid, mid, p) : { ok: false, error: 'offline' }; },
@@ -277,11 +278,18 @@
     try {
       if (state.net.circle) {
         const r = await client.pullNudges();
-        if (r.ok) {
-          for (const n of (r.notes || []).slice(0, 3)) {
-            const safe = String(n.text || '').replace(/[<>&]/g, '');
-            UI.toast('🌿 A note from the grove keeper: “' + safe + '”', 'rose');
+        if (r.ok && (r.notes || []).length) {
+          if (!Array.isArray(state.keeperNotes)) state.keeperNotes = [];
+          for (const n of r.notes) {
+            state.keeperNotes.push({
+              text: String(n.text || '').replace(/[<>&]/g, ''),
+              at: n.createdAt || Date.now(),
+            });
           }
+          state.keeperNotes = state.keeperNotes.slice(-5);
+          S.save(state);
+          UI.toast('🌿 The keeper left you a note — it’s waiting on Today.', 'rose');
+          UI.renderAll();
         }
       }
       const acct = state.account || {};

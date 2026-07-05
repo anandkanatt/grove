@@ -424,6 +424,33 @@ textarea.boost-composer { min-height: 96px; resize: vertical; margin: 10px 0 4px
 .chat-input-row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
 .chat-input-row .text-input { flex: 1; }
 
+/* ---------- habit loop: week strip, petal burst, keeper notes ---------- */
+.week-strip {
+  display: flex; gap: 8px; justify-content: center; align-items: center;
+  padding: 2px 0;
+}
+.week-dot {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--card); border: 1px solid var(--line);
+  font-size: 0.72rem; font-weight: 700; color: var(--muted);
+}
+.week-dot.active { border-color: var(--accent); font-size: 0.95rem; }
+.week-dot.today { box-shadow: 0 0 0 2px var(--accent); }
+.week-dot.future { opacity: 0.45; }
+
+.petal-bit {
+  position: absolute; z-index: 200; pointer-events: none;
+  font-size: 0.9rem; animation: petal-fall 0.9s ease-in forwards;
+}
+@keyframes petal-fall {
+  0% { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+  100% { transform: translate(var(--drift, 20px), 70px) rotate(160deg); opacity: 0; }
+}
+
+.keeper-notes-card { border: 1.5px solid #dfe7cf; background: linear-gradient(120deg, #eef3e4, var(--card)); }
+.keeper-note { font-family: var(--font-display); font-style: italic; margin-top: 6px; }
+
 /* ---------- maintenance banner ---------- */
 .flag-banner {
   background: var(--gold); color: #412402;

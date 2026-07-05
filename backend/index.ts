@@ -467,6 +467,16 @@ export const handler = router({
     return json({ ok: true });
   }],
 
+  // Her chosen garden-time hour (UTC bucket); null switches the reminder off.
+  'POST /api/circles/:id/reminder': [async (ctx) => {
+    const b = ctx.body as any;
+    const member = await getMember(ctx.params.id, b?.memberId, b?.memberKey);
+    if (!member) return error('unauthorized', 401);
+    const utcHour = b?.utcHour == null ? null : Math.max(0, Math.min(23, Number(b.utcHour) || 0));
+    await db.update('members', [{ id: member.id, record: { ...member, id: undefined, reminderUtcHour: utcHour } }]);
+    return json({ ok: true });
+  }],
+
   // Undelivered keeper notes for this member; delivery is marked immediately.
   'GET /api/circles/:id/nudges': [async (ctx) => {
     const member = await getMember(ctx.params.id, ctx.query.memberId, ctx.query.memberKey);
@@ -915,6 +925,44 @@ export const groveKeeperDaily = async (_event: unknown) => {
   }
 
   console.log(`grove keeper round: ${sent} note(s), ${circles.length} circle(s), ${campaigns.length} campaign(s)`);
+  return { statusCode: 200 };
+};
+
+// Garden-time reminders: her chosen hour, only if she has not tended today,
+// never in quiet mode, once per day, push-only (claimed accounts).
+export const groveReminderHourly = async (_event: unknown) => {
+  const now = Date.now();
+  const hour = new Date(now).getUTCHours();
+  const today = todayKey(now);
+  const [members, events, nudges] = await Promise.all([
+    listAll('members', {}), listAll('events', {}), listAll('nudges', {}),
+  ]);
+  const activeToday = new Set(
+    events.filter(e => todayKey(e.createdAt) === today).map(e => e.memberId));
+  let sent = 0;
+  for (const m of members) {
+    if (m.quiet || !m.userId) continue;
+    if (m.reminderUtcHour == null || Number(m.reminderUtcHour) !== hour) continue;
+    if (activeToday.has(m.id)) continue;
+    const already = nudges.some(n =>
+      n.memberId === m.id && n.source === 'reminder' && n.day === today);
+    if (already) continue;
+    try {
+      await notifications.send({
+        userIds: [String(m.userId)],
+        notification: { title: 'Garden time 🌿', body: 'Your plants are waiting for one tiny step.' },
+        data: { kind: 'garden-time' },
+      });
+      await db.add('nudges', [{
+        circleId: m.circleId, memberId: m.id, text: 'Garden time 🌿',
+        source: 'reminder', channel: 'push', day: today, createdAt: now, deliveredAt: now,
+      }]);
+      sent += 1;
+    } catch (err) {
+      console.warn('reminder send failed', err);
+    }
+  }
+  console.log(`garden-time reminders: ${sent} at UTC hour ${hour}`);
   return { statusCode: 200 };
 };
 
