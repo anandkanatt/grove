@@ -1449,6 +1449,52 @@ test('a never-starting recognition trips the fast pre-start watchdog', async () 
   assertEq(got.ends, 1);
 });
 
+// ---------- habit loop: lucky rewards, active days, week strip ----------
+test('luckyReward tiers by roll — golden, lucky, or quiet', () => {
+  assertEq(L.luckyReward(0.01), { kind: 'golden', petals: 20 });
+  assertEq(L.luckyReward(0.029), { kind: 'golden', petals: 20 });
+  assertEq(L.luckyReward(0.03), { kind: 'lucky', petals: 8 });
+  assertEq(L.luckyReward(0.149), { kind: 'lucky', petals: 8 });
+  assertEq(L.luckyReward(0.15), null);
+  assertEq(L.luckyReward(0.9), null);
+});
+
+test('completeStep applies seeded lucky rewards and records the active day', () => {
+  const st = makeState(makeGoal(10, 0));
+  const ev = L.completeStep(st, 'g1', 's0', T('2026-07-05'), () => 0.01);
+  const lucky = ev.find(e => e.type === 'lucky');
+  assertEq(lucky.kind, 'golden');
+  assertEq(lucky.petals, 20);
+  assertEq(st.petals, L.PETALS.STEP + 20);
+  assertEq(st.activeDays, ['2026-07-05']);
+  L.completeStep(st, 'g1', 's1', T('2026-07-05'), () => 0.9);
+  assertEq(st.activeDays, ['2026-07-05'], 'a day is recorded once');
+  const st2 = makeState(makeGoal(10, 0));
+  const ev2 = L.completeStep(st2, 'g1', 's0', T('2026-07-05'), () => 0.5);
+  assert(!ev2.some(e => e.type === 'lucky'), 'quiet roll, no lucky event');
+  assertEq(st2.petals, L.PETALS.STEP);
+});
+
+test('completeStep without an rng never rolls lucky (stable defaults)', () => {
+  const st = makeState(makeGoal(10, 0));
+  const ev = L.completeStep(st, 'g1', 's0', T('2026-07-05'));
+  assert(!ev.some(e => e.type === 'lucky'), 'default is quiet');
+  assertEq(st.petals, L.PETALS.STEP);
+});
+
+test('weekActivity maps the current Monday-to-Sunday week', () => {
+  const st = makeState(null);
+  st.activeDays = ['2026-06-29', '2026-07-01'];
+  const wk = L.weekActivity(st, T('2026-07-02')); // a Thursday
+  assertEq(wk.length, 7);
+  assertEq(wk[0], { day: '2026-06-29', active: true, isToday: false, future: false });
+  assertEq(wk[1].active, false);
+  assertEq(wk[2], { day: '2026-07-01', active: true, isToday: false, future: false });
+  assertEq(wk[3], { day: '2026-07-02', active: false, isToday: true, future: false });
+  assertEq(wk[4], { day: '2026-07-03', active: false, isToday: false, future: true });
+  assertEq(wk[6].future, true);
+});
+
 // ---------- phase 4: state v5, claim triggers, backups ----------
 test('state v5 carries account, prompt, and quiet fields', () => {
   const st = S.defaultState(T('2026-07-04'));

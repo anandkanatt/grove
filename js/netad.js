@@ -285,6 +285,15 @@ GroveNetAppDeploy.makeClient = function (cfg) {
       });
     },
 
+    async setReminder(utcHour) {
+      const ref = circleRef();
+      if (!ref || !memberKey()) return { ok: false, error: 'no-circle' };
+      return post('/api/circles/' + ref.id + '/reminder', {
+        memberId: ref.memberId, memberKey: memberKey(),
+        utcHour: utcHour == null ? null : Number(utcHour),
+      });
+    },
+
     async pullNudges() {
       const ref = circleRef();
       if (!ref || !memberKey()) return { ok: true, notes: [] };

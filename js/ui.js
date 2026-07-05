@@ -23,6 +23,13 @@ const GroveUI = {};
   const realCircle = () => (ctx.state.net && ctx.state.net.circle) || null;
   const flows = () => (window.Grove && window.Grove.net) || null;
   const syncer = () => (window.Grove && window.Grove.sync) || null;
+  // Implementation-intention anchors: "when will you do it?" — optional, warm.
+  const ANCHORS = {
+    morning: { emoji: '☀️', label: 'morning' },
+    midday: { emoji: '🌤️', label: 'midday' },
+    evening: { emoji: '🌙', label: 'evening' },
+  };
+
   const whispererOn = () => !(window.Grove && window.Grove.flags && window.Grove.flags.whisperer === false);
   const ai = () => (flows() && realCircle() && whispererOn() ? flows().ai : null);
 
@@ -197,7 +204,8 @@ const GroveUI = {};
             aria-label="Mark done: ${esc(step.text)}">✓</button>
           <div style="flex:1">
             <div class="step-text">${esc(step.text)}</div>
-            <div class="step-meta"><span class="goal-tag" style="background:${dom.color}">${esc(goal.name)}</span></div>
+            <div class="step-meta"><span class="goal-tag" style="background:${dom.color}">${esc(goal.name)}</span>${ANCHORS[goal.anchor]
+              ? `<span>${ANCHORS[goal.anchor].emoji} ${ANCHORS[goal.anchor].label}</span>` : ''}</div>
           </div>
         </div>`;
       }).join('');
@@ -216,10 +224,30 @@ const GroveUI = {};
         </div>
       </div>` : '';
 
+    // The week at a glance: soft dots, shields implied, never a red mark.
+    const week = L.weekActivity(st, Date.now());
+    const dayLetters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+    const weekStrip = st.goals.length ? `
+      <div class="week-strip" title="Days you tended the garden this week">
+        ${week.map((d, i) => `
+          <span class="week-dot ${d.active ? 'active' : ''} ${d.isToday ? 'today' : ''} ${d.future ? 'future' : ''}">
+            ${d.active ? '🌸' : dayLetters[i]}</span>`).join('')}
+      </div>` : '';
+
+    const notes = (st.keeperNotes || []);
+    const notesCard = notes.length ? `
+      <div class="card keeper-notes-card">
+        <div class="section-title"><h2>Notes left for you 🌿</h2></div>
+        ${notes.map(n => `<p class="sub keeper-note">“${esc(n.text)}”</p>`).join('')}
+        <button class="btn small secondary" data-action="keeper-notes-clear" style="margin-top:8px">Thanks, keeper 💛</button>
+      </div>` : '';
+
     maybeFetchDailyWhisper();
     view.innerHTML = `
       <div class="affirmation">“${esc(affirmationOfTheDay())}”${Whisper().speakAvailable()
         ? ` <button class="voice-btn" data-action="voice-speak" title="Hear it" aria-label="Read the affirmation aloud">🔈</button>` : ''}</div>
+      ${weekStrip}
+      ${notesCard}
       ${claimCard}
       <div class="card">
         <div class="section-title">
@@ -805,7 +833,15 @@ const GroveUI = {};
         <label class="privacy-row"><input type="checkbox" id="backup-private" ${st.account.backupPrivateGoals ? 'checked' : ''}>
           🌙 include private goals in backups</label>
         ${window.GrovePlatform && window.GrovePlatform.notifications ? `
-        <div class="settings-row"><button class="btn small secondary" data-action="push-subscribe">🔔 Keeper notes on this device</button></div>` : ''}` : ''}
+        <div class="settings-row"><button class="btn small secondary" data-action="push-subscribe">🔔 Keeper notes on this device</button></div>
+        ${realCircle() ? `<div class="settings-row">
+          <span class="sub">🌅 Garden time reminder:</span>
+          <select id="reminder-select" class="text-input" style="max-width:150px;padding:6px 10px">
+            <option value="">off</option>
+            ${[6, 7, 8, 9, 10, 12, 14, 16, 17, 18, 19, 20, 21].map(h =>
+              `<option value="${h}" ${st.reminderHour === h ? 'selected' : ''}>${h}:00</option>`).join('')}
+          </select>
+        </div>` : ''}` : ''}` : ''}
         ${realCircle() ? `
         <label class="privacy-row"><input type="checkbox" id="quiet-toggle" ${st.quiet ? 'checked' : ''}>
           🤫 quiet mode — no notes from the grove keeper</label>` : ''}` : ''}
@@ -819,7 +855,7 @@ const GroveUI = {};
       name: ctx.state.player.name || '', avatarId: ctx.state.player.avatarId || 0,
       accentId: ctx.state.player.accentId || 0,
       domain: 'career', goalName: '', goalEmoji: '🌱', steps: [], private: false,
-      seed: '', ideas: null, ideasLoading: false,
+      seed: '', ideas: null, ideasLoading: false, anchor: '',
     };
     renderWizard();
   }
@@ -909,6 +945,13 @@ const GroveUI = {};
         <p class="sub">Small steps win. Each step should fit in one day. You can change anything.</p>
         <label class="sub" style="font-weight:600">Goal name</label>
         <input class="text-input" id="ob-goal-name" maxlength="48" value="${esc(ob.goalName)}" style="margin:6px 0 12px">
+        <div class="sub" style="font-weight:600">When will you work on it? <span style="font-weight:400">(optional — a time helps it stick)</span></div>
+        <div class="domain-tabs" style="margin:6px 0 12px">
+          ${Object.keys(ANCHORS).map(id => `
+            <button class="domain-tab ${ob.anchor === id ? 'active' : ''}" data-action="ob-anchor" data-id="${id}">
+              ${ANCHORS[id].emoji} ${ANCHORS[id].label}</button>`).join('')}
+          <button class="domain-tab ${!ob.anchor ? 'active' : ''}" data-action="ob-anchor" data-id="">🤍 whenever</button>
+        </div>
         <div class="sub" style="font-weight:600;margin-bottom:4px">Tiny steps (${ob.steps.length})</div>
         <div class="steps-editor">${stepRows}</div>
         <button class="btn secondary small" data-action="ob-add-step">+ add a step</button>
@@ -949,6 +992,7 @@ const GroveUI = {};
       id: uid('g'), name: ob.goalName, domain: ob.domain, emoji: ob.goalEmoji,
       steps: steps.map(text => ({ id: uid('s'), text, done: false, doneAt: null })),
       createdAt: Date.now(), bloomedAt: null, reflection: null, private: !!ob.private,
+      anchor: ob.anchor || null,
     };
     st.goals.push(goal);
 
@@ -998,16 +1042,39 @@ const GroveUI = {};
     }
   }
 
-  function handleCompleteStep(goalId, stepId) {
+  // A half-second petal fall at the tapped checkbox — celebration wires habits.
+  function spawnPetals(el) {
+    if (!el || !el.getBoundingClientRect) return;
+    const r = el.getBoundingClientRect();
+    for (let i = 0; i < 6; i++) {
+      const p = document.createElement('span');
+      p.className = 'petal-bit';
+      p.textContent = ['🌸', '🌼', '🌺'][i % 3];
+      p.style.left = (r.left + r.width / 2 + (Math.random() * 40 - 20)) + 'px';
+      p.style.top = (r.top + window.scrollY) + 'px';
+      p.style.setProperty('--drift', (Math.random() * 60 - 30) + 'px');
+      p.style.animationDelay = (Math.random() * 0.15) + 's';
+      document.body.appendChild(p);
+      setTimeout(() => p.remove(), 1000);
+    }
+  }
+
+  function handleCompleteStep(goalId, stepId, btn) {
     const st = ctx.state;
     const levelBefore = L.levelForXp(st.xp).level;
-    const events = L.completeStep(st, goalId, stepId, Date.now());
+    const events = L.completeStep(st, goalId, stepId, Date.now(), Math.random);
     if (!events.length) return;
 
+    spawnPetals(btn);
     const goal = st.goals.find(g => g.id === goalId);
     toast(`+${L.XP.STEP} xp · +${L.PETALS.STEP} petals 🌸`);
 
     for (const e of events) {
+      if (e.type === 'lucky') {
+        toast(e.kind === 'golden'
+          ? `✨ A golden seed! +${e.petals} bonus petals`
+          : `🍀 A lucky petal drifted down — +${e.petals} bonus petals`, 'gold');
+      }
       if (e.type === 'streak') {
         if (e.earnedShield) toast('💧 You earned a Dew Shield — one missed day, forgiven.', 'gold');
         else if (e.usedShield) toast('💧 A Dew Shield kept your streak alive. Welcome back.');
@@ -1083,6 +1150,13 @@ const GroveUI = {};
     closeModal();
     ctx.save();
     renderAll();
+    // Investment loop: the moment one garden bed empties, offer the next seed.
+    if (L.activeGoals(st).length === 0) {
+      setTimeout(() => {
+        toast('Plant your next seed? 🌱', 'rose');
+        startWizard(false);
+      }, 900);
+    }
   }
 
   function handleCheer(memberId) {
@@ -1643,7 +1717,7 @@ const GroveUI = {};
     const a = btn.dataset.action;
 
     if (a === 'nav') switchView(btn.dataset.view);
-    else if (a === 'check-step') handleCompleteStep(btn.dataset.goal, btn.dataset.step);
+    else if (a === 'check-step') handleCompleteStep(btn.dataset.goal, btn.dataset.step, btn);
     else if (a === 'cheer') handleCheer(btn.dataset.member);
     else if (a === 'buy') handleBuy(btn.dataset.item);
     else if (a === 'new-goal') startWizard(false);
@@ -1657,6 +1731,12 @@ const GroveUI = {};
       ob.stage = 'steps'; renderWizard();
     }
     else if (a === 'ob-ideas-open') { collectWizardInputs(); ob.stage = 'ideas'; ob.ideas = null; renderWizard(); }
+    else if (a === 'ob-anchor') { collectWizardInputs(); ob.anchor = btn.dataset.id || ''; renderWizard(); }
+    else if (a === 'keeper-notes-clear') {
+      ctx.state.keeperNotes = [];
+      ctx.save();
+      renderView('today');
+    }
     else if (a === 'ob-ideas-get') handleGoalIdeas();
     else if (a === 'ob-idea-pick') handleIdeaPick(Number(btn.dataset.idx));
     else if (a === 'pick-custom') {
@@ -1738,6 +1818,18 @@ const GroveUI = {};
       toast(ev.target.checked
         ? '🌙 Private goals will ride along in your backups.'
         : '🌙 Private goals stay on this device only.');
+    }
+    if (ev.target.id === 'reminder-select') {
+      const val = ev.target.value === '' ? null : Number(ev.target.value);
+      ctx.state.reminderHour = val;
+      ctx.save();
+      // Convert her local hour to a UTC hour bucket (handles half-hour zones).
+      const utcHour = val == null ? null
+        : new Date(new Date().setHours(val, 0, 0, 0)).getUTCHours();
+      if (flows() && flows().setReminder) flows().setReminder(utcHour);
+      toast(val == null
+        ? 'Reminder off — the garden waits quietly 🌿'
+        : `🌅 Garden time set for ${val}:00 — a gentle nudge if you haven’t visited.`);
     }
     if (ev.target.id === 'quiet-toggle') {
       ctx.state.quiet = ev.target.checked;

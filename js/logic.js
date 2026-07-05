@@ -117,7 +117,15 @@ GroveLogic.addChallengeProgress = function (state, n, ts, fromPlayer) {
   return events;
 };
 
-GroveLogic.completeStep = function (state, goalId, stepId, ts) {
+// Small, gentle variable rewards: most steps are quiet, some drop a lucky
+// petal, a rare few a golden seed. Never a loss, never a jackpot.
+GroveLogic.luckyReward = function (roll) {
+  if (roll < 0.03) return { kind: 'golden', petals: 20 };
+  if (roll < 0.15) return { kind: 'lucky', petals: 8 };
+  return null;
+};
+
+GroveLogic.completeStep = function (state, goalId, stepId, ts, rng) {
   const goal = state.goals.find(g => g.id === goalId);
   if (!goal) return [];
   const step = goal.steps.find(s => s.id === stepId);
@@ -130,6 +138,20 @@ GroveLogic.completeStep = function (state, goalId, stepId, ts) {
   state.xp += GroveLogic.XP.STEP;
   state.petals += GroveLogic.PETALS.STEP;
   events.push({ type: 'step', goalId, stepId, xp: GroveLogic.XP.STEP, petals: GroveLogic.PETALS.STEP });
+
+  // The week strip reads this: which calendar days saw at least one step.
+  if (!Array.isArray(state.activeDays)) state.activeDays = [];
+  const todayKey = GroveLogic.dayKey(ts);
+  if (state.activeDays.indexOf(todayKey) === -1) {
+    state.activeDays.push(todayKey);
+    if (state.activeDays.length > 21) state.activeDays = state.activeDays.slice(-21);
+  }
+
+  const luck = GroveLogic.luckyReward(rng ? rng() : 1);
+  if (luck) {
+    state.petals += luck.petals;
+    events.push({ type: 'lucky', kind: luck.kind, petals: luck.petals });
+  }
 
   const streakRes = GroveLogic.applyActivity(state.streak, ts);
   state.streak = streakRes.streak;
@@ -220,6 +242,26 @@ GroveLogic.claimTrigger = function (state) {
     if (!shown[t]) return t;
   }
   return null;
+};
+
+// Mon..Sun of the current week for the Today strip — soft memory, no shame.
+GroveLogic.weekActivity = function (state, ts) {
+  const days = Array.isArray(state.activeDays) ? state.activeDays : [];
+  const monday = GroveLogic.weekKey(ts);
+  const today = GroveLogic.dayKey(ts);
+  const out = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday + 'T12:00:00');
+    d.setDate(d.getDate() + i);
+    const day = GroveLogic.dayKey(d.getTime());
+    out.push({
+      day,
+      active: days.indexOf(day) !== -1,
+      isToday: day === today,
+      future: GroveLogic.daysBetween(today, day) > 0,
+    });
+  }
+  return out;
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = GroveLogic;
